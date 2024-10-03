@@ -96,7 +96,7 @@ class L76X(object):
         self.config.Uart_SendString(data.encode())
         self.config.Uart_SendByte('\r'.encode())
         self.config.Uart_SendByte('\n'.encode())
-        print(data)
+        #print(data)
 
     def L76X_Gat_GNRMC(self):
         data = ''
@@ -140,7 +140,7 @@ class L76X(object):
             self.Altitude = self.get_altitude(gngga_line)
             self.Satellites = self.get_satellites(gngga_line)
 
-        print(data)
+        #print(data)
         data = '\r\n'
 
     def get_altitude(self, nmea_sentence):
