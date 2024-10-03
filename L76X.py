@@ -1,3 +1,5 @@
+# fragment biblioteki demo od producenta czujnika GNSS L76K Waveshare, link do strony ponizej
+# https://www.waveshare.com/wiki/L76K_GPS_Module#Download_Demo:~:text=to%20download%20the-,sample%20demo,-%2C%20unzip%20it%2C%20and
 import RPi.GPIO as GPIO
 import config
 import math
@@ -153,12 +155,12 @@ class L76X(object):
                 if altitude and unit == 'M':
                     return float(altitude)
                 else:
-                    print(f"\nBrak danych o wysokości lub nieprawidłowa jednostka: {nmea_sentence}")
+                    #print(f"\nBrak danych o wysokości lub nieprawidłowa jednostka: {nmea_sentence}")
                     return None
             except (IndexError, ValueError):
-                print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
+                #print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
                 return None
-        print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
+        #print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
         return None
     
     def get_satellites(self, nmea_sentence):
@@ -170,12 +172,12 @@ class L76X(object):
                 if satellites:
                     return int(satellites)
                 else:
-                    print(f"\nBrak danych o satelitach: {nmea_sentence}")
+                    #print(f"\nBrak danych o satelitach: {nmea_sentence}")
                     return None
             except (IndexError, ValueError):
-                print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
+                #print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
                 return None
-        print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
+        #print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
         return None
 
     def transformLat(self, x, y):
