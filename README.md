@@ -1,2 +1,4 @@
 # terrain-mapper-rspi
 Implementation of a system for three-dimensional terrain analysis. The system will consist of a physical tool for measuring position and height. The results obtained will be sent to the main part of the system, where they will be presented as three-dimensional terrain maps. The measurements and map results will be compared with others available.
+
+TO ADD: wykorzystanie żyroskopu - jezeli urzadzenie jest obrocone to akcelerator powinien to uwzgledniac i nie uwzgledniac ruchu w okół własnej osi jako ruchu urządzenia; Wstępne doprecyzowanie lokalizacji, aby urządzenie w pełni się zlokalizwoało i złapało sygnał, jednoczenie nie zapisywało niepoprawnych danych lokalizacyjnych nierealnie oddalonych od siebie; TO FIX: w zapisywanie long/lat/alt z taką samą liczbą miejsc po przecinku, najlepiej 6
