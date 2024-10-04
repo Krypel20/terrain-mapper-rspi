@@ -121,7 +121,6 @@ def main(stdscr):
     
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
-    l76k.L76X_Send_Command(l76k.SET_COLD_START)
     l76k.L76X_Set_Baudrate(9600)
     l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
