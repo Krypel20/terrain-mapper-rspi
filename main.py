@@ -42,29 +42,31 @@ def read_mpu6050(mpu):
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
-    threshold = 14 # Próg ruchu
-    
+    mv_threshold = 1 #13.5 # Próg ruchu
+    rt_threshold = 1 #100  # Próg rotacji
     while not stop_event.is_set():
         accel, gyro = read_mpu6050(mpu)
         movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
+        rotation = abs(gyro['x']) + abs(gyro['y']) + abs(gyro['z'])
         ui_data['accel'] = accel
         ui_data['gyro'] = gyro
         
         # Sprawdzanie, czy urządzenie jest w ruchu
-        if movement > threshold:
+        if movement > mv_threshold and rotation > rt_threshold:
             movement_detected[0] = True  # Wykryto ruch
-            ui_data['move'] = f"W ruchu, movement {movement:.2f}"
+            ui_data['move'] = f"W ruchu, movement {movement:.2f} | rotation {rotation:.2f}"
         else:
             movement_detected[0] = False  # Brak ruchu
-            ui_data['move'] = f"W miejscu, movement {movement:.2f}"
+            ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
 
-        time.sleep(0.01)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
+        time.sleep(0.03)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
 
 # Wątek do odczytu z L76K
-def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv_file):
+def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv_file, mesurements):
     while not stop_event.is_set():
         l76k.L76X_Gat_GNRMC()
         if l76k.Status == 1:
+            mesure_time = datetime.now().strftime("%H:%M:%S")
             gps_data = np.array([l76k.Lat, l76k.Lon, l76k.Altitude])
             kalman_filter.update(gps_data)
             kalman_filter.predict()
@@ -89,10 +91,12 @@ def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv
             # Zapis do CSV, tylko gdy wykryto ruch
             if movement_detected[0]:
                 with open(csv_file, 'a', newline='') as file:
+                    mesurements += 1
+                    ui_data['mesurements'] = mesurements
                     writer = csv.writer(file)
-                    writer.writerow([time.time(), lat, lon, alt])
+                    writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
                     
-                time.sleep(1) # Odczyt L76K co 1 sekundę (1 Hz), max czestotliwosc
+                #time.sleep(1) # Odczyt L76K co 1 sekundę (1 Hz), max czestotliwosc
         # else:
         #     ui_data['lat'] = None
         #     ui_data['lon'] = None
@@ -100,7 +104,7 @@ def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
-    measure_datetime = datetime.now().strftime("%H%M%S_%d%m%y")
+    measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
     folder_path = "measurements"
     csv_file = os.path.join(folder_path, f'dane{measure_datetime}.csv')
     
@@ -109,7 +113,7 @@ def init_csv():
         writer = csv.writer(file)
         writer.writerow(["Time", "Latitude", "Longitude", "Altitude"])
     
-    print(f"Zapis pomiarów do pliku: {csv_file}")
+    #print(f"Zapis pomiarów do pliku: {csv_file}")
     return csv_file
 
 def main(stdscr):
@@ -117,6 +121,7 @@ def main(stdscr):
     
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
+    l76k.L76X_Send_Command(l76k.SET_COLD_START)
     l76k.L76X_Set_Baudrate(9600)
     l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
@@ -142,7 +147,8 @@ def main(stdscr):
         'sat': None,
         'accel': {'x': 0, 'y': 0, 'z': 0},
         'gyro': {'x': 0, 'y': 0, 'z': 0},
-        'move': None
+        'move': None,
+        'mesurements': None
     }
     
     # Flaga wykrycia ruchu
@@ -153,17 +159,18 @@ def main(stdscr):
     
     # Inicjalizacja CSV
     csv_file = init_csv()
+    mesurements = 0 #liczba zapisanych pomiarów
     
     # Uruchamianie wątków
     mpu_thread = threading.Thread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
-    gps_thread = threading.Thread(target=l76k_thread, args=(l76k, kf, stop_event, ui_data, movement_detected ,csv_file))
-
+    gps_thread = threading.Thread(target=l76k_thread, args=(l76k, kf, stop_event, ui_data, movement_detected ,csv_file, mesurements))
+    
+    time.sleep(5)
     mpu_thread.start()
     gps_thread.start()
     
     try:
         while True:
-            # Aktualizacja danych na ekranie co 100 ms
             stdscr.clear()
             ui_data['datetime'] = datetime.now()
 
@@ -173,7 +180,7 @@ def main(stdscr):
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
 
             # Nagłówek GPS
-            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['datetime']}")
+            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['datetime']}, Pomiary: {ui_data['mesurements']}")
             if ui_data['lat'] is not None:
                 stdscr.addstr(5, 0, f"L76K\tLat: {ui_data['lat']:.6f}, Lon: {ui_data['lon']:.6f}, Altitude: {ui_data['alt']:.2f}, Satellites: {ui_data['sat']}")
                 stdscr.addstr(6, 0, f"Kalm\tLat: {ui_data['kf.lat']:.6f}, Lon: {ui_data['kf.lon']:.6f}, Alt: {ui_data['kf.alt']:.2f}")
@@ -184,6 +191,7 @@ def main(stdscr):
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
+
             time.sleep(0.1)  # Aktualizacja co 100 ms
             
     except KeyboardInterrupt:
