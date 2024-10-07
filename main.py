@@ -42,8 +42,8 @@ def read_mpu6050(mpu):
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
-    mv_threshold = 1 #13.5 # Próg ruchu
-    rt_threshold = 1 #100  # Próg rotacji
+    mv_threshold = 13.5 #13.5 # Próg ruchu
+    rt_threshold = 100 #100  # Próg rotacji
     while not stop_event.is_set():
         accel, gyro = read_mpu6050(mpu)
         movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
@@ -64,7 +64,7 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
 # Wątek do odczytu z L76K
 def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv_file, mesurements):
     while not stop_event.is_set():
-        l76k.L76X_Gat_GNRMC()
+        l76k.L76X_Gat_GNGGA()
         if l76k.Status == 1:
             mesure_time = datetime.now().strftime("%H:%M:%S")
             gps_data = np.array([l76k.Lat, l76k.Lon, l76k.Altitude])
@@ -78,6 +78,8 @@ def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv
             ui_data['lon'] = l76k.Lon
             ui_data['alt'] = l76k.Altitude
             ui_data['sat'] = l76k.Satellites
+            ui_data['hdop'] = l76k.HDOP
+            ui_data['quality_index'] = l76k.Quality_Indicator
             l76k.L76X_Baidu_Coordinates(l76k.Lat, l76k.Lon)
             ui_data['ba.lat'] = l76k.Lat_Baidu
             ui_data['ba.lon'] = l76k.Lon_Baidu
@@ -122,19 +124,19 @@ def main(stdscr):
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
+    #print("L76K cold start")
+    #time.sleep(30)
     l76k.L76X_Set_Baudrate(9600)
     l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
     l76k.L76X_Exit_BackupMode()
-    #print("L76K cold start")
-    #time.sleep(30)
     
     # Inicjalizacja filtra Kalmana
     kf = KalmanFilter()
     
     # Współdzielona pamięć do przechowywania danych dla UI
     ui_data = {
-        'datetime': None,
+        'duration': None,
         'time': None,
         'lat': None,
         'lon': None,
@@ -150,7 +152,9 @@ def main(stdscr):
         'accel': {'x': 0, 'y': 0, 'z': 0},
         'gyro': {'x': 0, 'y': 0, 'z': 0},
         'move': None,
-        'mesurements': None
+        'mesurements': None,
+        'hdop': None,
+        'quality_index': None
     }
     
     # Flaga wykrycia ruchu
@@ -174,7 +178,7 @@ def main(stdscr):
     try:
         while True:
             stdscr.clear()
-            ui_data['datetime'] = datetime.now()
+            ui_data['duration'] = datetime.now()
 
             # Nagłówek
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
@@ -182,12 +186,10 @@ def main(stdscr):
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
 
             # Nagłówek GPS
-            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['datetime']}, Pomiary: {ui_data['mesurements']}")
+            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['duration']}, Pomiary: {ui_data['mesurements']}")
             if ui_data['lat'] is not None:
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {ui_data['lat']:.6f}, {ui_data['lon']:.6f}, Altitude: {ui_data['alt']:.2f}, Satellites: {ui_data['sat']}")
-                stdscr.addstr(6, 0, f"Kalm\tLat,Lon: {ui_data['kf.lat']:.6f}, {ui_data['kf.lon']:.6f}, Altitude: {ui_data['kf.alt']:.2f}")
-                stdscr.addstr(7, 0, f"Baid\tLat,Lon: {ui_data['ba.lat']:.6f}, {ui_data['ba.lon']:.6f}")
-                stdscr.addstr(8, 0, f"Goog\tLat,Lon: {ui_data['go.lat']:.6f}, {ui_data['go.lon']:.6f}")
+                stdscr.addstr(6, 0, f"Quality Indicator: {ui_data['quality_index']}, HDOP: {ui_data['hdop']}")
             else:
                 stdscr.addstr(5, 0, "Brak ustalonej pozycji GPS")
 

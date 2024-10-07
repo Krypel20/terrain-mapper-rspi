@@ -1,5 +1,3 @@
-# fragment biblioteki demo od producenta czujnika GNSS L76K Waveshare, link do strony ponizej
-# https://www.waveshare.com/wiki/L76K_GPS_Module#Download_Demo:~:text=to%20download%20the-,sample%20demo,-%2C%20unzip%20it%2C%20and
 import RPi.GPIO as GPIO
 import config
 import math
@@ -20,6 +18,8 @@ x_pi = 3.14159265358979324 * 3000.0 / 180.0
 class L76X(object):
     Lon = 0.0
     Lat = 0.0
+    LonGNRMC = 0.0
+    LatGNRMC = 0.0
     Altitude = 0.0
     Lon_area = 'E'
     Lat_area = 'W'
@@ -28,6 +28,8 @@ class L76X(object):
     Time_S = 0
     Status = 0
     Satellites = 0
+    Quality_Indicator = 0  # Wskaźnik jakości sygnału GPS
+    HDOP = 0.0  # Dokładność pozioma (HDOP)
     Lon_Baidu = 0.0
     Lat_Baidu = 0.0
     Lon_Google = 0.0
@@ -66,10 +68,6 @@ class L76X(object):
     SET_POS_FIX_8S = '$PMTK220,8000'
     SET_POS_FIX_10S = '$PMTK220,10000'
 
-    # Ustawienie częstotliwości raportowania na 5 Hz (co 200 ms)
-    SET_UPDATE_FRQ = b'$PMTK220,200*2C\r\n'
-
-
     # Switching time output
     SET_SYNC_PPS_NMEA_OFF = '$PMTK255,0'
     SET_SYNC_PPS_NMEA_ON = '$PMTK255,1'
@@ -104,7 +102,7 @@ class L76X(object):
         self.config.Uart_SendByte('\n'.encode())
         #print(data)
 
-    def L76X_Gat_GNRMC(self):
+    def L76X_Gat_GNGGA(self):
         data = ''
         while True:
             if g.valid:
@@ -122,12 +120,12 @@ class L76X(object):
                     break
 
         # Odczyt współrzędnych z frazy GNRMC
-        self.Lat = g.latitude[0] + (g.latitude[1] / 60)
-        self.Lon = g.longitude[0] + (g.longitude[1] / 60)
-        if g.latitude[2] != 'N':
-            self.Lat = -self.Lat
-        if g.longitude[2] != 'E':
-            self.Lon = -self.Lon
+        #self.LatGNRMC = g.latitude[0] + (g.latitude[1] / 60)
+        #self.LonGNRMC = g.longitude[0] + (g.longitude[1] / 60)
+        #if g.latitude[2] != 'N':
+        #   self.LatGNRMC = -self.LatGNRMC
+        #if g.longitude[2] != 'E':
+        #    self.LonGNRMC = -self.LonGNRMC
 
         # Odczyt czasu
         self.Time_H = g.timestamp[0]
@@ -145,10 +143,44 @@ class L76X(object):
         if gngga_line:
             self.Altitude = self.get_altitude(gngga_line)
             self.Satellites = self.get_satellites(gngga_line)
+            self.Quality_Indicator = self.get_quality_indicator(gngga_line)
+            self.HDOP = self.get_hdop(gngga_line)
+            self.Lat, self.Lon = self.get_coordinates_from_gngga(gngga_line)
 
         #print(data)
         data = '\r\n'
+    
+    def get_coordinates_from_gngga(self, nmea_sentence):
+        """
+        Funkcja parsująca współrzędne z frazy $GNGGA.
+        """
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGGA":
+            try:
+                # Szerokość geograficzna
+                raw_lat = fields[2] 
+                lat_area = fields[3] 
+                # Długość geograficzna
+                raw_lon = fields[4]
+                lon_area = fields[5] 
 
+                # Przetwarzanie szerokości geograficznej
+                latitude = float(raw_lat[:2]) + (float(raw_lat[2:]) / 60)
+                if lat_area == 'S':
+                    latitude = -latitude
+
+                # Przetwarzanie długości geograficznej
+                longitude = float(raw_lon[:3]) + (float(raw_lon[3:]) / 60)
+                if lon_area == 'W':
+                    longitude = -longitude
+
+                return latitude, longitude
+            except (IndexError, ValueError):
+                return None, None
+                
+        return None, None
+    
+    
     def get_altitude(self, nmea_sentence):
         #Funkcja parsująca wysokość z frazy $GNGGA.
         fields = nmea_sentence.split(',')
@@ -159,12 +191,9 @@ class L76X(object):
                 if altitude and unit == 'M':
                     return float(altitude)
                 else:
-                    #print(f"\nBrak danych o wysokości lub nieprawidłowa jednostka: {nmea_sentence}")
                     return None
             except (IndexError, ValueError):
-                #print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
                 return None
-        #print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
         return None
     
     def get_satellites(self, nmea_sentence):
@@ -176,14 +205,43 @@ class L76X(object):
                 if satellites:
                     return int(satellites)
                 else:
-                    #print(f"\nBrak danych o satelitach: {nmea_sentence}")
                     return None
             except (IndexError, ValueError):
-                #print(f"\nBłąd parsowania frazy GGA: {nmea_sentence}")
                 return None
-        #print(f"\nFraza NMEA nie jest GGA: {nmea_sentence}")
         return None
+    
+    def get_quality_indicator(self, nmea_sentence):
+        """
+        Funkcja parsująca wskaźnik jakości sygnału GPS z frazy $GNGGA.
+        """
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGGA":
+            try:
+                # Wskaźnik jakości sygnału znajduje się w polu 6
+                quality = fields[6]
+                if quality.isdigit():
+                    return int(quality)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
 
+    def get_hdop(self, nmea_sentence):
+        """
+        Funkcja parsująca HDOP (dokładność pozioma) z frazy $GNGGA.
+        """
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGGA":
+            try:
+                # HDOP znajduje się w polu 8
+                hdop = fields[8]
+                if hdop:
+                    return float(hdop)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+    
     def transformLat(self, x, y):
         ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 *math.sqrt(abs(x))
         ret += (20.0 * math.sin(6.0 * x * pi) + 20.0 * math.sin(2.0 * x * pi)) * 2.0 / 3.0
