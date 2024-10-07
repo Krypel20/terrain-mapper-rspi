@@ -66,6 +66,10 @@ class L76X(object):
     SET_POS_FIX_8S = '$PMTK220,8000'
     SET_POS_FIX_10S = '$PMTK220,10000'
 
+    # Ustawienie częstotliwości raportowania na 5 Hz (co 200 ms)
+    SET_UPDATE_FRQ = b'$PMTK220,200*2C\r\n'
+
+
     # Switching time output
     SET_SYNC_PPS_NMEA_OFF = '$PMTK255,0'
     SET_SYNC_PPS_NMEA_ON = '$PMTK255,1'
@@ -118,8 +122,8 @@ class L76X(object):
                     break
 
         # Odczyt współrzędnych z frazy GNRMC
-        self.Lat = g.latitude[0] + g.latitude[1] / 100
-        self.Lon = g.longitude[0] + g.longitude[1] / 100
+        self.Lat = g.latitude[0] + (g.latitude[1] / 60)
+        self.Lon = g.longitude[0] + (g.longitude[1] / 60)
         if g.latitude[2] != 'N':
             self.Lat = -self.Lat
         if g.longitude[2] != 'E':

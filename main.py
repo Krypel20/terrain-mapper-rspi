@@ -126,6 +126,8 @@ def main(stdscr):
     l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
     l76k.L76X_Exit_BackupMode()
+    #print("L76K cold start")
+    #time.sleep(30)
     
     # Inicjalizacja filtra Kalmana
     kf = KalmanFilter()
@@ -165,7 +167,7 @@ def main(stdscr):
     mpu_thread = threading.Thread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
     gps_thread = threading.Thread(target=l76k_thread, args=(l76k, kf, stop_event, ui_data, movement_detected ,csv_file, mesurements))
     
-    time.sleep(5)
+    #time.sleep(5)
     mpu_thread.start()
     gps_thread.start()
     
@@ -182,10 +184,10 @@ def main(stdscr):
             # Nagłówek GPS
             stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['datetime']}, Pomiary: {ui_data['mesurements']}")
             if ui_data['lat'] is not None:
-                stdscr.addstr(5, 0, f"L76K\tLat: {ui_data['lat']:.6f}, Lon: {ui_data['lon']:.6f}, Altitude: {ui_data['alt']:.2f}, Satellites: {ui_data['sat']}")
-                stdscr.addstr(6, 0, f"Kalm\tLat: {ui_data['kf.lat']:.6f}, Lon: {ui_data['kf.lon']:.6f}, Alt: {ui_data['kf.alt']:.2f}")
-                stdscr.addstr(7, 0, f"Baid\tLat: {ui_data['ba.lat']:.6f}, Lon: {ui_data['ba.lon']:.6f}")
-                stdscr.addstr(8, 0, f"Goog\tLat: {ui_data['go.lat']:.6f}, Lon: {ui_data['go.lon']:.6f}")
+                stdscr.addstr(5, 0, f"L76K\tLat,Lon: {ui_data['lat']:.6f}, {ui_data['lon']:.6f}, Altitude: {ui_data['alt']:.2f}, Satellites: {ui_data['sat']}")
+                stdscr.addstr(6, 0, f"Kalm\tLat,Lon: {ui_data['kf.lat']:.6f}, {ui_data['kf.lon']:.6f}, Altitude: {ui_data['kf.alt']:.2f}")
+                stdscr.addstr(7, 0, f"Baid\tLat,Lon: {ui_data['ba.lat']:.6f}, {ui_data['ba.lon']:.6f}")
+                stdscr.addstr(8, 0, f"Goog\tLat,Lon: {ui_data['go.lat']:.6f}, {ui_data['go.lon']:.6f}")
             else:
                 stdscr.addstr(5, 0, "Brak ustalonej pozycji GPS")
 
