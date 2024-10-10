@@ -7,32 +7,47 @@ import csv
 import os
 from config import config
 from datetime import datetime
+import sys
+import traceback
+import logging
+from threading import Thread, Event
+import RPi.GPIO as GPIO
 
-class KalmanFilter:
-    def __init__(self):
-        # Stan: pozycja GPS (lat, lon, alt)
-        self.x = np.zeros(3)  # Wektor stanu: [lat, lon, alt]
-        self.P = np.eye(3)    # Macierz błędów oszacowania
-        self.F = np.eye(3)    # Macierz przejścia (stanowa)
-        self.H = np.eye(3)    # Macierz obserwacji (dostosowana do trzech zmiennych: lat, lon, alt)
-        self.R = np.eye(3) * 0.01  # Macierz szumów pomiarowych (dla lat, lon, alt)
-        self.Q = np.eye(3) * 0.0001  # Macierz szumów procesu
+# Konfiguracja zapisywania logów do pliku
+logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-    def predict(self):
-        # Predykcja stanu i błędów oszacowania
-        self.x = np.dot(self.F, self.x)
-        self.P = np.dot(self.F, np.dot(self.P, self.F.T)) + self.Q
+# Ustawienia dla przycisku GPIO 26 odopwiedzialnego za zapis pomiarów
+BUTTON_PIN = 26
+mesurement_saveing = True
+button_pressed = False
+last_press_time = 0
+debounce_time = 0.3
 
-    def update(self, z):
-        # Aktualizacja na podstawie nowych danych z GPS (lat, lon, alt)
-        y = z - np.dot(self.H, self.x)  # Błąd innowacji
-        S = np.dot(self.H, np.dot(self.P, self.H.T)) + self.R  # Macierz innowacji
-        K = np.dot(np.dot(self.P, self.H.T), np.linalg.inv(S))  # Wzmocnienie Kalmana
-        self.x += np.dot(K, y)  # Aktualizacja stanu
-        self.P = np.dot((np.eye(3) - np.dot(K, self.H)), self.P)  # Aktualizacja błędów oszacowania
+# Funkcja do obsługi przycisku
+def handle_button():
+    global mesurement_saveing, button_pressed, last_press_time
+    button_state = GPIO.input(BUTTON_PIN)
+    current_time = time.time()
+    
+    if button_state == GPIO.LOW and not button_pressed and (current_time - last_press_time) > debounce_time:
+        mesurement_saveing = not mesurement_saveing
+        last_press_time = current_time
 
-    def get_state(self):
-        return self.x  # Zwraca współrzędne [lat, lon, alt]
+# Funkcja do obsługi wyjątków w wątkach
+def thread_exception_handler(args):
+    exc_type, exc_value, exc_traceback = args
+    logging.error("Nieobsłużony wyjątek w wątku:\n" + 
+                  ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+    stop_event.set()  # Zatrzymaj wszystkie wątki
+
+# Zmodyfikowana klasa Thread
+class SafeThread(Thread):
+    def run(self):
+        try:
+            super().run()
+        except Exception:
+            thread_exception_handler(sys.exc_info())
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -42,8 +57,8 @@ def read_mpu6050(mpu):
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
-    mv_threshold = 13.5 #13.5 # Próg ruchu
-    rt_threshold = 100 #100  # Próg rotacji
+    mv_threshold = 0 #13.5 # Próg ruchu
+    rt_threshold = 0 #100  # Próg rotacji
     while not stop_event.is_set():
         accel, gyro = read_mpu6050(mpu)
         movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
@@ -62,15 +77,12 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
         time.sleep(0.03)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
 
 # Wątek do odczytu z L76K
-def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv_file, mesurements):
+def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesurements):
+    global mesurement_saveing
     while not stop_event.is_set():
         l76k.L76X_Gat_GNGGA()
         if l76k.Status == 1:
             mesure_time = datetime.now().strftime("%H:%M:%S")
-            gps_data = np.array([l76k.Lat, l76k.Lon, l76k.Altitude])
-            kalman_filter.update(gps_data)
-            kalman_filter.predict()
-            lat, lon, alt = kalman_filter.get_state()
             
             # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
             ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
@@ -86,23 +98,20 @@ def l76k_thread(l76k, kalman_filter, stop_event, ui_data, movement_detected, csv
             l76k.L76X_Google_Coordinates(l76k.Lat, l76k.Lon)
             ui_data['go.lat'] = l76k.Lat
             ui_data['go.lon'] = l76k.Lon
-            ui_data['kf.lat'] = lat
-            ui_data['kf.lon'] = lon
-            ui_data['kf.alt'] = alt
             
             # Zapis do CSV, tylko gdy wykryto ruch
             if movement_detected[0]:
-                with open(csv_file, 'a', newline='') as file:
-                    mesurements += 1
-                    ui_data['mesurements'] = mesurements
-                    writer = csv.writer(file)
-                    writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
-                    
-                #time.sleep(1) # Odczyt L76K co 1 sekundę (1 Hz), max czestotliwosc
-        # else:
-        #     ui_data['lat'] = None
-        #     ui_data['lon'] = None
-        #     ui_data['alt'] = None
+                if mesurement_saveing:
+                    ui_data['csv_status'] = "Aktywny"
+                    with open(csv_file, 'a', newline='') as file:
+                        mesurements += 1
+                        ui_data['mesurements'] = mesurements
+                        writer = csv.writer(file)
+                        writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+                else:
+                    ui_data['csv_status'] = "Zatrzymany"
+        
+        time.sleep(0.5)  # Próbkowanie GPS co 500 ms
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
@@ -119,7 +128,12 @@ def init_csv():
     return csv_file
 
 def main(stdscr):
+    global stop_event
     curses.curs_set(0)
+    
+    #inicjalizacja przycisku
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
@@ -131,9 +145,6 @@ def main(stdscr):
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
     l76k.L76X_Exit_BackupMode()
     
-    # Inicjalizacja filtra Kalmana
-    kf = KalmanFilter()
-    
     # Współdzielona pamięć do przechowywania danych dla UI
     ui_data = {
         'duration': None,
@@ -144,9 +155,6 @@ def main(stdscr):
         'ba.lon': None,
         'go.lat': None,
         'go.lon': None,
-        'kf.lat': None,
-        'kf.lon': None,
-        'kf.alt': None,
         'alt': None,
         'sat': None,
         'accel': {'x': 0, 'y': 0, 'z': 0},
@@ -154,7 +162,8 @@ def main(stdscr):
         'move': None,
         'mesurements': None,
         'hdop': None,
-        'quality_index': None
+        'quality_index': None,
+        'csv_status': None
     }
     
     # Flaga wykrycia ruchu
@@ -168,17 +177,25 @@ def main(stdscr):
     mesurements = 0 #liczba zapisanych pomiarów
     
     # Uruchamianie wątków
-    mpu_thread = threading.Thread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
-    gps_thread = threading.Thread(target=l76k_thread, args=(l76k, kf, stop_event, ui_data, movement_detected ,csv_file, mesurements))
-    
-    #time.sleep(5)
+    mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
+    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected ,csv_file, mesurements))
+
     mpu_thread.start()
     gps_thread.start()
     
+    start_time = datetime.now()
+    
     try:
-        while True:
+        while not stop_event.is_set():
+            handle_button()
             stdscr.clear()
-            ui_data['duration'] = datetime.now()
+            
+            elapsed_time = datetime.now() - start_time
+            ui_data['duration'] = str(elapsed_time).split('.')[0]
+            if mesurement_saveing:
+                ui_data['csv_status'] = "Aktywny"
+            else:
+                ui_data['csv_status'] = "Zatrzymany"
 
             # Nagłówek
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
@@ -186,7 +203,7 @@ def main(stdscr):
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
 
             # Nagłówek GPS
-            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, {ui_data['duration']}, Pomiary: {ui_data['mesurements']}")
+            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}")
             if ui_data['lat'] is not None:
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {ui_data['lat']:.6f}, {ui_data['lon']:.6f}, Altitude: {ui_data['alt']:.2f}, Satellites: {ui_data['sat']}")
                 stdscr.addstr(6, 0, f"Quality Indicator: {ui_data['quality_index']}, HDOP: {ui_data['hdop']}")
@@ -195,13 +212,20 @@ def main(stdscr):
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
-
             time.sleep(0.1)  # Aktualizacja co 100 ms
             
     except KeyboardInterrupt:
+            pass
+    finally:
         stop_event.set()
         mpu_thread.join()
         gps_thread.join()
-    
+        
+        # Wyświetl informację o błędzie, jeśli wystąpił
+        stdscr.clear()
+        stdscr.addstr(0, 0, "Program zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
+        stdscr.refresh()
+        stdscr.getch()  # Czekaj na naciśnięcie klawisza
+
 if __name__ == "__main__":
     curses.wrapper(main)
