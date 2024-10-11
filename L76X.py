@@ -4,6 +4,7 @@ import math
 import time
 import io
 from micropyGPS import MicropyGPS
+import logging
 
 g = MicropyGPS(+8)
 Temp = '0123456789ABCDEF*'
@@ -110,22 +111,17 @@ class L76X(object):
             else:
                 self.Status = 0
             x = self.config.Uart_ReceiveByte()
-            if x == b'$':
-                while x != b'\r':
-                    data += x.decode()
-                    g.update(x.decode())
-                    x = self.config.Uart_ReceiveByte()
-                data += '\r\n'
-                if '$GNGLL' in data:
-                    break
-
-        # Odczyt współrzędnych z frazy GNRMC
-        #self.LatGNRMC = g.latitude[0] + (g.latitude[1] / 60)
-        #self.LonGNRMC = g.longitude[0] + (g.longitude[1] / 60)
-        #if g.latitude[2] != 'N':
-        #   self.LatGNRMC = -self.LatGNRMC
-        #if g.longitude[2] != 'E':
-        #    self.LonGNRMC = -self.LonGNRMC
+            try: 
+                if x == b'$':
+                    while x != b'\r':
+                        data += x.decode('utf-8')
+                        g.update(x.decode())
+                        x = self.config.Uart_ReceiveByte()
+                    data += '\r\n'
+                    if '$GNGLL' in data:
+                        break
+            except UnicodeDecodeError:
+                logging.warning(f"Wystąpił problem z dekodowaniem UTF-8. Użyto zastępczego dekodowania. Oryginalne dane: {data}")
 
         # Odczyt czasu
         self.Time_H = g.timestamp[0]
