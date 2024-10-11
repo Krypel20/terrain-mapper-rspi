@@ -5,13 +5,15 @@ import curses
 import numpy as np
 import csv 
 import os
-from config import config
-from datetime import datetime
 import sys
 import traceback
 import logging
-from threading import Thread, Event
 import RPi.GPIO as GPIO
+from config import config
+from datetime import datetime
+from threading import Thread
+from waveshare_OLED import OLED_0in96
+from PIL import Image,ImageDraw,ImageFont
 
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
@@ -45,13 +47,6 @@ class Button:
     def cleanup(self):
         GPIO.cleanup(self.pin)
 
-# Funkcja do obsługi wyjątków w wątkach
-def thread_exception_handler(args):
-    exc_type, exc_value, exc_traceback = args
-    logging.error("Nieobsłużony wyjątek w wątku:\n" + 
-                  ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
-    stop_event.set()  # Zatrzymaj wszystkie wątki
-
 # Zmodyfikowana klasa Thread
 class SafeThread(Thread):
     def run(self):
@@ -59,6 +54,78 @@ class SafeThread(Thread):
             super().run()
         except Exception:
             thread_exception_handler(sys.exc_info())
+
+# Funkcja do obsługi wyjątków w wątkach
+def thread_exception_handler(args):
+    exc_type, exc_value, exc_traceback = args
+    logging.error("Nieobsłużony wyjątek w wątku:\n" + 
+                  ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+    stop_event.set()  # Zatrzymaj wszystkie wątki
+
+class Display:
+    def __init__(self, default_font_size=12):
+        self.oled = OLED_0in96.OLED_0in96()
+        self.oled.Init()
+        self.oled.clear()
+        self.image = Image.new('1', (self.oled.width, self.oled.height), 255)
+        self.draw = ImageDraw.Draw(self.image)
+        self.default_font = ImageFont.truetype('pic/Font.ttc', default_font_size)
+        self.last_update_time = time.time()
+        self.previous_data = {}
+        self.text_positions = {
+            'alt': (2, 0), 
+            'move_status': (72, 0),
+            'csv_status': (2, 14), 
+            'measurements': (90, 14),
+            'duration': (2, 26),
+            'hdop': (2, 38),'sat': (60, 38)
+        }
+
+    def clear(self):
+        self.oled.clear()
+        self.draw.rectangle((0, 0, self.oled.width, self.oled.height), fill=255)
+
+    def display_text(self, text, x, y, font_size=None):
+        if font_size:
+            font = ImageFont.truetype('pic/Font.ttc', font_size)
+        else:
+            font = self.default_font
+        self.draw.text((x, y), text, font=font, fill=0)
+
+    def update_field(self, field, value):
+        if field in self.text_positions and self.previous_data.get(field) != value:
+            x, y = self.text_positions[field]
+            # Clear the specific area
+            self.draw.rectangle((x, y, 128 - x, y + 12), fill=255)
+            self.display_text(f"{value}", x, y, 10)
+            self.previous_data[field] = value
+            return True
+        return False
+
+    def display_data(self, ui_data):
+        current_time = time.time()
+        if current_time - self.last_update_time < 0.1:
+            return  # Skip update if interval has not passed
+
+        updated = False
+
+        #updated |= self.update_field('move_status', f"{ui_data['move_status']}")
+        updated |= self.update_field('duration', f"{ui_data['duration']}")
+        updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
+        #updated |= self.update_field('measurements', f"- {ui_data['mesurements']}")
+        updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
+        updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']}" if ui_data['hdop'] is not None else "HDOP: N/A")
+        updated |= self.update_field('sat', f"Sat: {ui_data['sat']}" if ui_data['sat'] is not None else "Sat: N/A")
+
+        if updated:
+            self.oled.ShowImage(self.oled.getbuffer(self.image))
+            self.last_update_time = current_time
+
+# Funkcja do aktualizacji wyświetlacza OLED
+def oled_update_thread(display, stop_event, ui_data):
+    while not stop_event.is_set():
+        display.display_data(ui_data)
+        time.sleep(0.05)  # Aktualizacja co 50 ms
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -68,8 +135,8 @@ def read_mpu6050(mpu):
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
-    mv_threshold = 0 #13.5 # Próg ruchu
-    rt_threshold = 0 #100  # Próg rotacji
+    mv_threshold = 13.5 #13.5 Próg ruchu
+    rt_threshold = 85 #100  Próg rotacji
     while not stop_event.is_set():
         accel, gyro = read_mpu6050(mpu)
         movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
@@ -81,9 +148,11 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
         if movement > mv_threshold and rotation > rt_threshold:
             movement_detected[0] = True  # Wykryto ruch
             ui_data['move'] = f"W ruchu, movement {movement:.2f} | rotation {rotation:.2f}"
+            ui_data['move_status'] = "W ruchu"
         else:
             movement_detected[0] = False  # Brak ruchu
             ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
+            ui_data['move_status'] = "W miejscu"
 
         time.sleep(0.03)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
 
@@ -103,12 +172,6 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesureme
             ui_data['sat'] = l76k.Satellites
             ui_data['hdop'] = l76k.HDOP
             ui_data['quality_index'] = l76k.Quality_Indicator
-            l76k.L76X_Baidu_Coordinates(l76k.Lat, l76k.Lon)
-            ui_data['ba.lat'] = l76k.Lat_Baidu
-            ui_data['ba.lon'] = l76k.Lon_Baidu
-            l76k.L76X_Google_Coordinates(l76k.Lat, l76k.Lon)
-            ui_data['go.lat'] = l76k.Lat
-            ui_data['go.lon'] = l76k.Lon
             
             # Zapis do CSV, tylko gdy wykryto ruch
             if movement_detected[0]:
@@ -141,7 +204,8 @@ def init_csv():
 def main(stdscr):
     global stop_event
     curses.curs_set(0)
-    
+    display = Display()
+    display.display_text(f"Terrain Mapper \nInicjalizacja...", 20, 20, 14)
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
@@ -159,21 +223,18 @@ def main(stdscr):
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
     l76k.L76X_Exit_BackupMode()
     
-    # Współdzielona pamięć do przechowywania danych dla UI
+    # Współdzielona pamięć do przechowywania danych dla UI terminala
     ui_data = {
         'duration': None,
         'time': None,
         'lat': None,
         'lon': None,
-        'ba.lat': None,
-        'ba.lon': None,
-        'go.lat': None,
-        'go.lon': None,
         'alt': None,
         'sat': None,
         'accel': {'x': 0, 'y': 0, 'z': 0},
         'gyro': {'x': 0, 'y': 0, 'z': 0},
         'move': None,
+        'move_status': None,
         'mesurements': None,
         'hdop': None,
         'quality_index': None,
@@ -188,12 +249,13 @@ def main(stdscr):
     mesurements = 0 #liczba zapisanych pomiarów
     
     # Uruchamianie wątków
+    display.clear()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected ,csv_file, mesurements, pause_mesure))
-
+    oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+    oled_thread.start()
     mpu_thread.start()
     gps_thread.start()
-    
     start_time = datetime.now()
     
     try:
@@ -209,28 +271,25 @@ def main(stdscr):
                 ui_data['csv_status'] = "Aktywny"
             else:
                 ui_data['csv_status'] = "Zatrzymany"
-
-            # Nagłówek
+            
+            # Nagłówek czujnika ruchu UI TERMINALA
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
             stdscr.addstr(1, 0, f"Akcelerometr: X={ui_data['accel']['x']:.2f}, Y={ui_data['accel']['y']:.2f}, Z={ui_data['accel']['z']:.2f}")
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
-
-            # Nagłówek GPS
+            
+            # Nagłówek GPS UI TERMINALA
             stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}")
             try:
+                # UI TERMINALA
                 lat = f"{ui_data['lat']:.6f}" if ui_data['lat'] is not None else "N/A"
                 lon = f"{ui_data['lon']:.6f}" if ui_data['lon'] is not None else "N/A"
                 alt = f"{ui_data['alt']:.2f}" if ui_data['alt'] is not None else "N/A"
                 sat = f"{ui_data['sat']}" if ui_data['sat'] is not None else "N/A"
+                hdop = f"{ui_data['hdop']}" if ui_data['hdop'] is not None else "N/A"
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Satellites: {sat}")
+                stdscr.addstr(6, 0, f"index HDOP: {hdop}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
-            
-            try:
-                quality_index = f"{ui_data['quality_index']}" if ui_data['quality_index'] is not None else "N/A"
-                hdop = f"{ui_data['hdop']}" if ui_data['hdop'] is not None else "N/A"
-                stdscr.addstr(6, 0, f"Quality Indicator: {quality_index}, HDOP: {hdop}")
-            except TypeError:
                 stdscr.addstr(6, 0, "Quality Indicator: N/A, HDOP: N/A")
 
             # Odświeżenie ekranu terminala
@@ -247,8 +306,12 @@ def main(stdscr):
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
         if stop_mesure.state:
+            display.clear()
+            display.display_text(f"Pomiar zakończony :)", 20, 20, 13)
             stdscr.addstr(0, 0, "Program zakończony pomyślnie.")
         else:
+            display.clear()
+            display.display_text(f"Wystapil blad :(", 20, 20, 13)
             stdscr.addstr(0, 0, "Program zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
         stdscr.refresh()
         stdscr.getch()  # Czekaj na naciśnięcie klawisza
