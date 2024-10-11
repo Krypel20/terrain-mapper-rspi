@@ -1,0 +1,35 @@
+2024-10-11 19:30:35,971 - ERROR - Nieobsłużony wyjątek w wątku:
+Traceback (most recent call last):
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 54, in run
+    super().run()
+  File "/usr/lib/python3.11/threading.py", line 975, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 161, in l76k_thread
+    l76k.L76X_Baidu_Coordinates(l76k.Lat, l76k.Lon)
+  File "/home/pkrypel/terrain-mapper-rspi/L76X.py", line 276, in L76X_Baidu_Coordinates
+    self.GPS_Lat = U_Lat % 1 *100 / 60 + math.floor(U_Lat)
+                   ~~~~~~^~~
+TypeError: unsupported operand type(s) for %: 'NoneType' and 'int'
+
+2024-10-11 19:40:14,719 - ERROR - Nieobsłużony wyjątek w wątku:
+Traceback (most recent call last):
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 54, in run
+    super().run()
+  File "/usr/lib/python3.11/threading.py", line 975, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 161, in l76k_thread
+    l76k.L76X_Baidu_Coordinates(l76k.Lat, l76k.Lon)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'L76X' object has no attribute 'L76X_Baidu_Coordinates'
+
+2024-10-11 20:50:40,417 - ERROR - Nieobsłużony wyjątek w wątku:
+Traceback (most recent call last):
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 54, in run
+    super().run()
+  File "/usr/lib/python3.11/threading.py", line 975, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/pkrypel/terrain-mapper-rspi/main.py", line 182, in l76k_thread
+    writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+                                       ^^^^^^^^^^^^^^^^^^
+TypeError: type NoneType doesn't define __round__ method
+

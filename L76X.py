@@ -272,12 +272,6 @@ class L76X(object):
         self.Lat_Goodle = self.GPS_Lat + dLat
         self.Lon_Goodle = self.GPS_Lon + dLon
 
-    def L76X_Baidu_Coordinates(self, U_Lat, U_Lon):
-        self.GPS_Lat = U_Lat % 1 *100 / 60 + math.floor(U_Lat)
-        self.GPS_Lon = U_Lon % 1 *100 / 60 + math.floor(U_Lon)
-        self.transform()
-        self.bd_encrypt()
-
     def L76X_Google_Coordinates(self, U_Lat, U_Lon):
         self.GPS_Lat = U_Lat % 1 / 60 + U_Lat/1
         self.GPS_Lon = U_Lon % 1 / 60 + U_Lon/1
