@@ -14,6 +14,7 @@ from datetime import datetime
 from threading import Thread
 from waveshare_OLED import OLED_0in96
 from PIL import Image,ImageDraw,ImageFont
+from queue import Queue, Empty
 
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
@@ -74,12 +75,11 @@ class Display:
         self.previous_data = {}
         self.text_positions = {
             'alt': (2, 0), 
-            'move_status': (72, 0),
+            #'move_status': (72, 0),
             'csv_status': (2, 14), 
-            'measurements': (90, 14),
+            #'measurements': (90, 14),
             'duration': (2, 26),
             'hdop': (2, 38),'sat': (60, 38),
-            'status': (2, 14)
         }
 
     def clear(self):
@@ -139,7 +139,7 @@ class Display:
 def oled_update_thread(display, stop_event, ui_data):
     while not stop_event.is_set():
         display.display_data(ui_data)
-        time.sleep(0.05)  # Aktualizacja co 50 ms
+        time.sleep(0.1)  # Aktualizacja co 100 ms
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -171,7 +171,7 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
         time.sleep(0.05)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
 
 # Wątek do odczytu z L76K
-def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesurements, pause_mesure):
+def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue):
     global mesurement_saveing
     while not stop_event.is_set():
         l76k.L76X_Gat_GNGGA()
@@ -185,21 +185,31 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesureme
             ui_data['alt'] = l76k.Altitude
             ui_data['sat'] = l76k.Satellites
             ui_data['hdop'] = l76k.HDOP
-            ui_data['quality_index'] = l76k.Quality_Indicator
             
             # Zapis do CSV, tylko gdy wykryto ruch
-            if movement_detected[0]:
-                if not pause_mesure.state:
-                    ui_data['csv_status'] = "Aktywny"
-                    with open(csv_file, 'a', newline='') as file:
-                        mesurements += 1
-                        ui_data['mesurements'] = mesurements
-                        writer = csv.writer(file)
-                        writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
-                else:
-                    ui_data['csv_status'] = "Zatrzymany"
+            if movement_detected[0] and not pause_mesure.state and l76k.Altitude:
+                ui_data['csv_status'] = "Aktywny"
+                mesurements += 1
+                ui_data['mesurements'] = mesurements
+                data_queue.put([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+            else:
+                ui_data['csv_status'] = "Zatrzymany"
         
-        #time.sleep(0.5)  # Próbkowanie GPS co 500 ms
+        time.sleep(0.5)  # Próbkowanie GPS co 500 ms
+
+def csv_writer_thread(csv_file, data_queue, stop_event):
+    with open(csv_file, 'a', newline='') as file:
+        writer = csv.writer(file)
+        while not stop_event.is_set():
+            try:
+                data = data_queue.get(timeout=1)
+                writer.writerow(data)
+                file.flush()  # Ensure data is written to disk
+            except Empty:
+                continue  # If queue is empty, continue waiting
+            except Exception as e:
+                logging.error(f"Error in CSV writer thread: {str(e)}")
+                break  # Exit the loop if there's an unexpected error
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
@@ -212,7 +222,6 @@ def init_csv():
         writer = csv.writer(file)
         writer.writerow(["Time", "Latitude", "Longitude", "Altitude"])
     
-    #print(f"Zapis pomiarów do pliku: {csv_file}")
     return csv_file
 
 def main(stdscr):
@@ -234,8 +243,8 @@ def main(stdscr):
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
-    #print("L76K cold start")
-    #time.sleep(30)
+    # print("L76K cold start")
+    # time.sleep(30)
     l76k.L76X_Set_Baudrate(9600)
     l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
     l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
@@ -272,14 +281,18 @@ def main(stdscr):
     display.clear()
     csv_file = init_csv()
     mesurements = 0 #liczba zapisanych pomiarów
-    
+    data_queue = Queue()
+
     # Uruchamianie wątków
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
-    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected ,csv_file, mesurements, pause_mesure))
+    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+    csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
+
     gps_thread.start()
     oled_thread.start()
     mpu_thread.start()
+    csv_thread.start()
     start_time = datetime.now()
     
     try:
@@ -327,6 +340,7 @@ def main(stdscr):
         mpu_thread.join()
         gps_thread.join()
         oled_thread.join()
+        csv_thread.join()
         
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
