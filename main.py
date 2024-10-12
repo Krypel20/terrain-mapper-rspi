@@ -78,7 +78,8 @@ class Display:
             'csv_status': (2, 14), 
             'measurements': (90, 14),
             'duration': (2, 26),
-            'hdop': (2, 38),'sat': (60, 38)
+            'hdop': (2, 38),'sat': (60, 38),
+            'status': (2, 14)
         }
 
     def clear(self):
@@ -91,6 +92,19 @@ class Display:
         else:
             font = self.default_font
         self.draw.text((x, y), text, font=font, fill=0)
+
+    def display_message(self, message, font_size=13):
+        self.clear()
+        font = ImageFont.truetype('pic/Font.ttc', font_size)
+        lines = message.split('\n')
+        y_position = (self.oled.height - (len(lines) * font_size)) // 2
+        for line in lines:
+            bbox = self.draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+            x_position = (self.oled.width - text_width) // 2
+            self.draw.text((x_position, y_position), line, font=font, fill=0)
+            y_position += font_size
+        self.oled.ShowImage(self.oled.getbuffer(self.image))
 
     def update_field(self, field, value):
         if field in self.text_positions and self.previous_data.get(field) != value:
@@ -114,8 +128,8 @@ class Display:
         updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
         #updated |= self.update_field('measurements', f"- {ui_data['mesurements']}")
         updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
-        updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']}" if ui_data['hdop'] is not None else "HDOP: N/A")
-        updated |= self.update_field('sat', f"Sat: {ui_data['sat']}" if ui_data['sat'] is not None else "Sat: N/A")
+        #updated |= self.update_field('sat', f"sat: {ui_data['sat']}" if ui_data['sat'] is not None else "sat: N/A")
+        updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} Sat: {ui_data['sat']}" if ui_data['sat'] is not None else "HDOP: N/A Sat: N/A")
 
         if updated:
             self.oled.ShowImage(self.oled.getbuffer(self.image))
@@ -135,15 +149,15 @@ def read_mpu6050(mpu):
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
-    mv_threshold = 13.5 #13.5 Próg ruchu
-    rt_threshold = 85 #100  Próg rotacji
+    mv_threshold = 0 #13.5 Próg ruchu
+    rt_threshold = 0 #100  Próg rotacji
     while not stop_event.is_set():
         accel, gyro = read_mpu6050(mpu)
         movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
         rotation = abs(gyro['x']) + abs(gyro['y']) + abs(gyro['z'])
         ui_data['accel'] = accel
         ui_data['gyro'] = gyro
-        
+
         # Sprawdzanie, czy urządzenie jest w ruchu
         if movement > mv_threshold and rotation > rt_threshold:
             movement_detected[0] = True  # Wykryto ruch
@@ -154,7 +168,7 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
             ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
             ui_data['move_status'] = "W miejscu"
 
-        time.sleep(0.03)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
+        time.sleep(0.05)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
 
 # Wątek do odczytu z L76K
 def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesurements, pause_mesure):
@@ -185,7 +199,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesureme
                 else:
                     ui_data['csv_status'] = "Zatrzymany"
         
-        time.sleep(0.5)  # Próbkowanie GPS co 500 ms
+        #time.sleep(0.5)  # Próbkowanie GPS co 500 ms
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
@@ -205,13 +219,17 @@ def main(stdscr):
     global stop_event
     curses.curs_set(0)
     display = Display()
-    display.display_text(f"Terrain Mapper \nInicjalizacja...", 20, 20, 14)
+
+    # Display initialization message on OLED
+    display.display_message("Terrain Mapper\nInicjalizacja...")
+
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
     #inicjalizacja przycisku
     stop_mesure = Button(13, 1, False, stop_event.set)
     pause_mesure = Button(26, 0.3, False)
+    start_mesure = Button(26, 0.3, False)
     
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
@@ -244,18 +262,24 @@ def main(stdscr):
     # Flaga wykrycia ruchu
     movement_detected = [False]
     
+    print("Oczekiwanie na naciśnięcie przycisku start")
+    display.display_message("Wcisnij przycisk\nstart")
+    while not start_mesure.state:
+        start_mesure.handle_button()
+        time.sleep(0.1)
+
     # Inicjalizacja CSV
+    display.clear()
     csv_file = init_csv()
     mesurements = 0 #liczba zapisanych pomiarów
     
     # Uruchamianie wątków
-    display.clear()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected ,csv_file, mesurements, pause_mesure))
     oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+    gps_thread.start()
     oled_thread.start()
     mpu_thread.start()
-    gps_thread.start()
     start_time = datetime.now()
     
     try:
@@ -302,19 +326,29 @@ def main(stdscr):
         stop_event.set()
         mpu_thread.join()
         gps_thread.join()
+        oled_thread.join()
         
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
+        display.clear()
         if stop_mesure.state:
-            display.clear()
-            display.display_text(f"Pomiar zakończony :)", 20, 20, 13)
-            stdscr.addstr(0, 0, "Program zakończony pomyślnie.")
+            start_mesure.state = False
+            display.display_message("Pomiar\nzakończony :)")
+            print("\nProgram zakończony pomyślnie.")
         else:
-            display.clear()
-            display.display_text(f"Wystapil blad :(", 20, 20, 13)
-            stdscr.addstr(0, 0, "Program zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
+            start_mesure.state = False
+            display.display_message("Wystapil blad :(")
+            print("\nProgram zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
+
         stdscr.refresh()
-        stdscr.getch()  # Czekaj na naciśnięcie klawisza
+        #stdscr.getch()  # Czekaj na naciśnięcie klawisza
+
+        print("\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
+        display.display_message("Wcisnij start aby\nzaczac nowy pomiar")
+        while not start_mesure.state:
+            start_mesure.handle_button()
+            time.sleep(0.1)
 
 if __name__ == "__main__":
-    curses.wrapper(main)
+    while True:
+        curses.wrapper(main)
