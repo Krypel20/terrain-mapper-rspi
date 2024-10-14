@@ -16,6 +16,11 @@ from waveshare_OLED import OLED_0in96
 from PIL import Image,ImageDraw,ImageFont
 from queue import Queue, Empty
 
+mpu6050_sleep = 0.2
+l76k_sleep = 1
+oled_sleep = 1
+terminal_ui_sleep = 0.1
+
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -139,7 +144,7 @@ class Display:
 def oled_update_thread(display, stop_event, ui_data):
     while not stop_event.is_set():
         display.display_data(ui_data)
-        time.sleep(0.1)  # Aktualizacja co 100 ms
+        time.sleep(oled_sleep)  # Aktualizacja co 100 ms max
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -168,7 +173,7 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
             ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
             ui_data['move_status'] = "W miejscu"
 
-        time.sleep(0.05)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
+        time.sleep(0.15)  # Próbkowanie MPU6050 co 150ms
 
 # Wątek do odczytu z L76K
 def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue):
@@ -195,7 +200,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             else:
                 ui_data['csv_status'] = "Zatrzymany"
         
-        time.sleep(0.5)  # Próbkowanie GPS co 500 ms
+        time.sleep(l76k_sleep)  # Próbkowanie GPS co 500 ms
 
 def csv_writer_thread(csv_file, data_queue, stop_event):
     with open(csv_file, 'a', newline='') as file:
@@ -215,14 +220,14 @@ def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
     measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
     folder_path = "measurements"
-    csv_file = os.path.join(folder_path, f'dane{measure_datetime}.csv')
+    csv_file = os.path.join(folder_path, f'{measure_datetime}.csv')
     
     # Tworzenie pliku z nagłówkiem
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(["Time", "Latitude", "Longitude", "Altitude"])
     
-    return csv_file
+    return csv_file, measure_datetime
 
 def main(stdscr):
     global stop_event
@@ -275,11 +280,11 @@ def main(stdscr):
     display.display_message("Wcisnij przycisk\nstart")
     while not start_mesure.state:
         start_mesure.handle_button()
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     # Inicjalizacja CSV
     display.clear()
-    csv_file = init_csv()
+    csv_file, file_name = init_csv()
     mesurements = 0 #liczba zapisanych pomiarów
     data_queue = Queue()
 
@@ -331,7 +336,7 @@ def main(stdscr):
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
-            time.sleep(0.1)  # Aktualizacja co 100 ms
+            time.sleep(terminal_ui_sleep)  # Aktualizacja co 100 ms
             
     except KeyboardInterrupt:
             pass
@@ -347,21 +352,21 @@ def main(stdscr):
         display.clear()
         if stop_mesure.state:
             start_mesure.state = False
-            display.display_message("Pomiar\nzakończony :)")
+            display.display_message(f"Pomiar\nzakończony :)\n Zapisano pomiary do:\n{file_name}")
             print("\nProgram zakończony pomyślnie.")
         else:
             start_mesure.state = False
-            display.display_message("Wystapil blad :(")
+            display.display_message(f"Wystapil blad :(\n Zapisano pomiary do:\n{file_name}")
             print("\nProgram zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
 
         stdscr.refresh()
         #stdscr.getch()  # Czekaj na naciśnięcie klawisza
 
-        print("\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
-        display.display_message("Wcisnij start aby\nzaczac nowy pomiar")
+        print(f"Zapisano do {file_name}\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
+        display.display_message(f"Zapisano {file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
         while not start_mesure.state:
             start_mesure.handle_button()
-            time.sleep(0.1)
+            time.sleep(0.05)
 
 if __name__ == "__main__":
     while True:
