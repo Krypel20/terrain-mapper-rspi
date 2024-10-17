@@ -17,9 +17,10 @@ from PIL import Image,ImageDraw,ImageFont
 from queue import Queue, Empty
 
 mpu6050_sleep = 0.2
-l76k_sleep = 1
+l76k_sleep = 0.2
 oled_sleep = 1
 terminal_ui_sleep = 0.1
+button_push_loop = 0.01
 
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
@@ -173,15 +174,27 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
             ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
             ui_data['move_status'] = "W miejscu"
 
-        time.sleep(0.15)  # Próbkowanie MPU6050 co 150ms
+        time.sleep(mpu6050_sleep)  # Próbkowanie MPU6050 co 150ms
 
 # Wątek do odczytu z L76K
 def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue):
     global mesurement_saveing
+    last_measurement_time = None
+    
     while not stop_event.is_set():
         l76k.L76X_Gat_GNGGA()
         if l76k.Status == 1:
-            mesure_time = datetime.now().strftime("%H:%M:%S")
+            current_time = datetime.now()
+            mesure_time = current_time.strftime("%H:%M:%S")
+            
+            # Obliczanie opóźnienia pomiędzy pomiarami
+            if last_measurement_time is not None:
+                delay = (current_time - last_measurement_time).total_seconds()
+                ui_data['delay'] = delay
+            else:
+                ui_data['delay'] = None  # Brak poprzedniego pomiaru
+            
+            last_measurement_time = current_time  # Aktualizacja czasu ostatniego pomiaru
             
             # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
             ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
@@ -190,13 +203,17 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             ui_data['alt'] = l76k.Altitude
             ui_data['sat'] = l76k.Satellites
             ui_data['hdop'] = l76k.HDOP
+            ui_data['vdop'] = l76k.VDOP
+            ui_data['pdop'] = l76k.PDOP
+            ui_data['gnss_system'] = l76k.GNSS_system
             
             # Zapis do CSV, tylko gdy wykryto ruch
-            if movement_detected[0] and not pause_mesure.state and l76k.Altitude:
+            if movement_detected[0] and not pause_mesure.state:
                 ui_data['csv_status'] = "Aktywny"
-                mesurements += 1
-                ui_data['mesurements'] = mesurements
-                data_queue.put([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+                if l76k.Altitude:
+                    mesurements += 1
+                    ui_data['mesurements'] = mesurements
+                    data_queue.put([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
             else:
                 ui_data['csv_status'] = "Zatrzymany"
         
@@ -209,51 +226,47 @@ def csv_writer_thread(csv_file, data_queue, stop_event):
             try:
                 data = data_queue.get(timeout=1)
                 writer.writerow(data)
-                file.flush()  # Ensure data is written to disk
+                file.flush()  # upewnienie sie ze dane sa zapisane
             except Empty:
-                continue  # If queue is empty, continue waiting
+                continue
             except Exception as e:
                 logging.error(f"Error in CSV writer thread: {str(e)}")
-                break  # Exit the loop if there's an unexpected error
+                break 
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
     measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
     folder_path = "measurements"
-    csv_file = os.path.join(folder_path, f'{measure_datetime}.csv')
+    file_name = f'tm{measure_datetime}.csv'
+    csv_file = os.path.join(folder_path, file_name)
     
     # Tworzenie pliku z nagłówkiem
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["Time", "Latitude", "Longitude", "Altitude"])
+        writer.writerow(["time", "latitude", "longitude", "altitude"])
     
-    return csv_file, measure_datetime
+    return csv_file, file_name
+
+# Funkcja do sprawdzania długości kolejki
+def check_queue_length(measurements_queue):
+    queue_length = measurements_queue.qsize()
+    return queue_length
 
 def main(stdscr):
     global stop_event
+    NO_OLED = False
     curses.curs_set(0)
     display = Display()
-
-    # Display initialization message on OLED
-    display.display_message("Terrain Mapper\nInicjalizacja...")
+    display.display_message("Terrain Mapper\nInicjalizacja...", 15)
 
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
-    
-    #inicjalizacja przycisku
-    stop_mesure = Button(13, 1, False, stop_event.set)
-    pause_mesure = Button(26, 0.3, False)
-    start_mesure = Button(26, 0.3, False)
     
     conf = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
     # print("L76K cold start")
     # time.sleep(30)
-    l76k.L76X_Set_Baudrate(9600)
-    l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
-    l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
-    l76k.L76X_Exit_BackupMode()
     
     # Współdzielona pamięć do przechowywania danych dla UI terminala
     ui_data = {
@@ -269,19 +282,48 @@ def main(stdscr):
         'move_status': None,
         'mesurements': None,
         'hdop': None,
+        'vdop': None,
+        'pdop': None,
+        'gnss_system': None,
         'quality_index': None,
-        'csv_status': None
+        'csv_status': None,
+        'queue_length': None,
+        'delay': None,
     }
     
     # Flaga wykrycia ruchu
     movement_detected = [False]
     
+    #inicjalizacja przyciskuów
+    stop_mesure = Button(26, 1, False, stop_event.set) #red
+    pause_mesure = Button(13, 0.3, False) #yellow
+    start_mesure = Button(6, 0.3, False)  #green
+    
     print("Oczekiwanie na naciśnięcie przycisku start")
-    display.display_message("Wcisnij przycisk\nstart")
+    display.display_message("Wcisnij przycisk\nstart", 15)
+    stop_flag = stop_mesure.state
+    pause_flag = pause_mesure.state
     while not start_mesure.state:
         start_mesure.handle_button()
-        time.sleep(0.05)
-
+        if stop_mesure.state is not stop_flag:
+            l76k.L76X_Send_Command(l76k.SET_COLD_START)
+            sys.exit(0)
+        
+        #opcja uruchomienia programu bez odświerzania wyświetlacza OLED
+        if pause_mesure.state is not pause_flag:
+            NO_OLED = True
+            display.display_message("Pomiar bez podglądu\nOLED OFF\nWcisnij start", 13)
+            while not start_mesure.state:
+                start_mesure.handle_button()
+                time.sleep(button_push_loop)
+                
+        time.sleep(button_push_loop)
+        
+    l76k.L76X_Set_Baudrate(9600)
+    l76k.L76X_Send_Command(l76k.SET_POS_FIX_200MS)
+    l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
+    l76k.L76X_Exit_BackupMode()
+    
     # Inicjalizacja CSV
     display.clear()
     csv_file, file_name = init_csv()
@@ -289,17 +331,21 @@ def main(stdscr):
     data_queue = Queue()
 
     # Uruchamianie wątków
+    if not NO_OLED:
+        oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+        oled_thread.start()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
-    oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
-
     gps_thread.start()
-    oled_thread.start()
     mpu_thread.start()
     csv_thread.start()
-    start_time = datetime.now()
     
+    start_time = datetime.now()
+    if NO_OLED:
+        display.display_message("************\nTRWA POMIAR\n_________________", 17)
+    stop_mesure.state = False
+    pause_mesure.state = False
     try:
         while not stop_event.is_set():
             stdscr.clear()
@@ -313,6 +359,8 @@ def main(stdscr):
                 ui_data['csv_status'] = "Aktywny"
             else:
                 ui_data['csv_status'] = "Zatrzymany"
+                
+            ui_data['queue_length'] = check_queue_length(data_queue)
             
             # Nagłówek czujnika ruchu UI TERMINALA
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
@@ -320,7 +368,7 @@ def main(stdscr):
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
             
             # Nagłówek GPS UI TERMINALA
-            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}")
+            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']}, Delay: {ui_data['delay']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}, W kolejce do zapisu: {ui_data['queue_length']}")
             try:
                 # UI TERMINALA
                 lat = f"{ui_data['lat']:.6f}" if ui_data['lat'] is not None else "N/A"
@@ -328,23 +376,27 @@ def main(stdscr):
                 alt = f"{ui_data['alt']:.2f}" if ui_data['alt'] is not None else "N/A"
                 sat = f"{ui_data['sat']}" if ui_data['sat'] is not None else "N/A"
                 hdop = f"{ui_data['hdop']}" if ui_data['hdop'] is not None else "N/A"
+                vdop = f"{ui_data['vdop']}" if ui_data['vdop'] is not None else "N/A"
+                pdop = f"{ui_data['pdop']}" if ui_data['pdop'] is not None else "N/A"
+                gnss_system = f"{ui_data['gnss_system']}" if ui_data['gnss_system'] is not None else "N/A"
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Satellites: {sat}")
-                stdscr.addstr(6, 0, f"index HDOP: {hdop}")
+                stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, PDOP: {pdop}, GNSS: {gnss_system}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
-                stdscr.addstr(6, 0, "Quality Indicator: N/A, HDOP: N/A")
+                stdscr.addstr(6, 0, "HDOP: N/A, VDOP: N/A, PDOP: N/A, GNSS: N/A")
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
-            time.sleep(terminal_ui_sleep)  # Aktualizacja co 100 ms
+            time.sleep(terminal_ui_sleep)
             
     except KeyboardInterrupt:
             pass
     finally:
+        if not NO_OLED:
+            oled_thread.join()
         stop_event.set()
         mpu_thread.join()
         gps_thread.join()
-        oled_thread.join()
         csv_thread.join()
         
         # Wyświetl informację o błędzie, jeśli wystąpił
@@ -352,21 +404,29 @@ def main(stdscr):
         display.clear()
         if stop_mesure.state:
             start_mesure.state = False
-            display.display_message(f"Pomiar\nzakończony :)\n Zapisano pomiary do:\n{file_name}")
+            if not NO_OLED:
+                display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
+            else:
+                display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
             print("\nProgram zakończony pomyślnie.")
+            time.sleep(2)
         else:
             start_mesure.state = False
-            display.display_message(f"Wystapil blad :(\n Zapisano pomiary do:\n{file_name}")
-            print("\nProgram zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
+            display.display_message(f"\nProgram zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
+            print("\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
+            time.sleep(1.25)
 
         stdscr.refresh()
         #stdscr.getch()  # Czekaj na naciśnięcie klawisza
-
         print(f"Zapisano do {file_name}\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
-        display.display_message(f"Zapisano {file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+        display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+        
+        flag = stop_mesure.state
         while not start_mesure.state:
             start_mesure.handle_button()
-            time.sleep(0.05)
+            if stop_mesure.state is not flag:
+                sys.exit(0)
+            time.sleep(button_push_loop)
 
 if __name__ == "__main__":
     while True:
