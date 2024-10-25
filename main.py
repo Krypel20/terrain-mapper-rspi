@@ -9,6 +9,9 @@ import sys
 import traceback
 import logging
 import RPi.GPIO as GPIO
+import psycopg2
+from psycopg2 import OperationalError
+from db_connection import DatabaseConnection
 from config import config
 from datetime import datetime
 from threading import Thread
@@ -21,6 +24,7 @@ l76k_sleep = 0.2
 oled_sleep = 1
 terminal_ui_sleep = 0.1
 button_push_loop = 0.01
+db = DatabaseConnection()
 
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
@@ -185,16 +189,15 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
         l76k.L76X_Gat_GNGGA()
         if l76k.Status == 1:
             current_time = datetime.now()
-            mesure_time = current_time.strftime("%H:%M:%S")
+            mesure_timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
             
             # Obliczanie opóźnienia pomiędzy pomiarami
             if last_measurement_time is not None:
                 delay = (current_time - last_measurement_time).total_seconds()
                 ui_data['delay'] = delay
             else:
-                ui_data['delay'] = None  # Brak poprzedniego pomiaru
-            
-            last_measurement_time = current_time  # Aktualizacja czasu ostatniego pomiaru
+                ui_data['delay'] = None
+            last_measurement_time = current_time
             
             # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
             ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
@@ -213,7 +216,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                 if l76k.Altitude:
                     mesurements += 1
                     ui_data['mesurements'] = mesurements
-                    data_queue.put([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
             else:
                 ui_data['csv_status'] = "Zatrzymany"
         
@@ -237,7 +240,7 @@ def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
     measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
     folder_path = "measurements"
-    file_name = f'tm{measure_datetime}.csv'
+    file_name = f'{measure_datetime}.csv'
     csv_file = os.path.join(folder_path, file_name)
     
     # Tworzenie pliku z nagłówkiem
@@ -247,27 +250,24 @@ def init_csv():
     
     return csv_file, file_name
 
+def check_db_connection(db):
+    try:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        return True
+    except OperationalError:
+        return False
+
 # Funkcja do sprawdzania długości kolejki
 def check_queue_length(measurements_queue):
     queue_length = measurements_queue.qsize()
     return queue_length
 
 def main(stdscr):
-    global stop_event
+    global stop_event, db
     NO_OLED = False
-    curses.curs_set(0)
-    display = Display()
-    display.display_message("Terrain Mapper\nInicjalizacja...", 15)
 
-    # Event do zatrzymywania wątków
-    stop_event = threading.Event()
-    
-    conf = config(baudrate=9600, mpu_address=0x68)
-    l76k=L76X.L76X()
-    l76k.L76X_Send_Command(l76k.SET_COLD_START)
-    # print("L76K cold start")
-    # time.sleep(30)
-    
     # Współdzielona pamięć do przechowywania danych dla UI terminala
     ui_data = {
         'duration': None,
@@ -289,7 +289,43 @@ def main(stdscr):
         'csv_status': None,
         'queue_length': None,
         'delay': None,
+        'db_connection': None,
+        'wifi_connection': None
     }
+
+    curses.curs_set(0)
+    display = Display()
+    display.display_message("Terrain Mapper\nInicjalizacja...", 15)
+
+    # Inicjalizacja połączenia z bazą danych
+    try:
+        db = DatabaseConnection(
+            dbname="terrain_measurements",
+            user="pkrypel",
+            password="20122002",
+            host="192.168.43.183", #laptop ip na wifi z tel
+            port="5432" #5432 na kompie
+        )
+        logging.info("Połączenie z bazą danych zostało zainicjalizowane.")
+    except Exception as e:
+        logging.error(f"Nie udało się zainicjalizować połączenia z bazą danych: {e}")
+        sys.exit(1)
+
+    if check_db_connection(db):
+            ui_data['db_connection'] = "Połączono"
+            print("Połączono z bazą danych")
+    else:
+        ui_data['db_connection'] = "Brak połączenia" 
+        print("Nie można połączyć się z bazą danych")
+
+    # Event do zatrzymywania wątków
+    stop_event = threading.Event()
+    
+    conf = config(baudrate=9600, mpu_address=0x68)
+    l76k=L76X.L76X()
+    l76k.L76X_Send_Command(l76k.SET_COLD_START)
+    # print("L76K cold start")
+    # time.sleep(30)
     
     # Flaga wykrycia ruchu
     movement_detected = [False]
@@ -361,6 +397,12 @@ def main(stdscr):
                 ui_data['csv_status'] = "Zatrzymany"
                 
             ui_data['queue_length'] = check_queue_length(data_queue)
+
+            if int(time.time()) % 60 == 0:
+                if check_db_connection(db):
+                    ui_data['db_connection'] = "Połączono"
+                else:
+                    ui_data['db_connection'] = "Brak połączenia"
             
             # Nagłówek czujnika ruchu UI TERMINALA
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
@@ -384,6 +426,8 @@ def main(stdscr):
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
                 stdscr.addstr(6, 0, "HDOP: N/A, VDOP: N/A, PDOP: N/A, GNSS: N/A")
+
+            stdscr.addstr(7, 0, f"Połączenie z bazą danych: {ui_data['db_connection']}")
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
@@ -409,6 +453,23 @@ def main(stdscr):
             else:
                 display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
             print("\nProgram zakończony pomyślnie.")
+            time.sleep(1)
+            
+            # Próba importu danych do bazy po zakończeniu pomiaru
+            if check_db_connection(db):
+                try:
+                    db.import_csv_data(csv_file)
+                    print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
+                    display.display_message()
+                    ui_data['db_connection'] = "Zaimportowano dane"
+                except Exception as e:
+                    print(f"Błąd podczas importu danych do bazy: {str(e)}")
+                    ui_data['db_connection'] = "Błąd importu"
+            else:
+                print("Brak połączenia z bazą danych. Import nie został wykonany.")
+                ui_data['db_connection'] = "Brak połączenia"
+            # Zamknij połączenie z bazą danych
+            db.close()
             time.sleep(2)
         else:
             start_mesure.state = False
@@ -418,7 +479,7 @@ def main(stdscr):
 
         stdscr.refresh()
         #stdscr.getch()  # Czekaj na naciśnięcie klawisza
-        print(f"Zapisano do {file_name}\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
+        print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
         display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
         
         flag = stop_mesure.state
