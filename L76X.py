@@ -17,6 +17,13 @@ x_pi = 3.14159265358979324 * 3000.0 / 180.0
 
 
 class L76X(object):
+    GNSS_SYSTEMS = {
+        1: "GPS",
+        2: "GLONASS",
+        3: "GALILEO",
+        5: "BEIDOU"
+    }
+    
     Lon = 0.0
     Lat = 0.0
     LonGNRMC = 0.0
@@ -29,8 +36,11 @@ class L76X(object):
     Time_S = 0
     Status = 0
     Satellites = 0
-    Quality_Indicator = 0  # Wskaźnik jakości sygnału GPS
+    Quality_Indicator = 0
     HDOP = 0.0  # Dokładność pozioma (HDOP)
+    VDOP = 0.0  # Dokładność pionowa (VDOP)
+    PDOP = 0.0  # Dokładność położenia (PDOP)
+    GNSS_system = "Unknown"  # System GNSS
     Lon_Baidu = 0.0
     Lat_Baidu = 0.0
     Lon_Google = 0.0
@@ -138,11 +148,23 @@ class L76X(object):
         
         if gngga_line:
             self.Altitude = self.get_altitude(gngga_line)
-            self.Satellites = self.get_satellites(gngga_line)
-            self.Quality_Indicator = self.get_quality_indicator(gngga_line)
             self.HDOP = self.get_hdop(gngga_line)
+            self.Satellites = self.get_satellites(gngga_line)
             self.Lat, self.Lon = self.get_coordinates_from_gngga(gngga_line)
-
+            
+        # Odczyt danych z frazy GNGSA
+        start_index = data.find("$GNGSA")
+        end_index = data.find("\n", start_index)
+        if end_index == -1:  # Jeśli to ostatnia linia w ciągu
+            gngsa_line = data[start_index:]
+        else:
+            gngsa_line = data[start_index:end_index]
+        
+        if gngsa_line:
+            self.PDOP = self.get_pdop(gngsa_line)
+            self.VDOP = self.get_vdop(gngsa_line)
+            self.GNSS_system = self.get_gnss_system(gngsa_line)
+            
         #print(data)
         data = '\r\n'
     
@@ -229,10 +251,49 @@ class L76X(object):
         fields = nmea_sentence.split(',')
         if fields[0] == "$GNGGA":
             try:
-                # HDOP znajduje się w polu 8
+                # HDOP znajduje się w polu 8 w GNGGA
                 hdop = fields[8]
                 if hdop:
                     return float(hdop)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+    
+    def get_pdop(self, nmea_sentence):
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGSA":
+            try:
+                # PDOP znajduje się w polu 4
+                pdop = fields[4]
+                if pdop:
+                    return float(pdop)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+    
+    def get_vdop(self, nmea_sentence):
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGSA":
+            try:
+                # VDOP znajduje się w polu 6
+                vdop = fields[6]
+                if vdop:
+                    return float(vdop)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+    
+    def get_gnss_system(self, nmea_sentence):
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNGSA":
+            try:
+                # ID systemu GNSS znajduje się w polu 7
+                gnss_system_id = fields[7]
+                if gnss_system_id.isdigit():
+                    return self.GNSS_SYSTEMS.get(gnss_system_id, "Unknown")
                 else:
                     return None
             except (IndexError, ValueError):

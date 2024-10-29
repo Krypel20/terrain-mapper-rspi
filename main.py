@@ -9,11 +9,22 @@ import sys
 import traceback
 import logging
 import RPi.GPIO as GPIO
+import psycopg2
+from psycopg2 import OperationalError
+from db_connection import DatabaseConnection
 from config import config
 from datetime import datetime
 from threading import Thread
 from waveshare_OLED import OLED_0in96
 from PIL import Image,ImageDraw,ImageFont
+from queue import Queue, Empty
+
+mpu6050_sleep = 0.2
+l76k_sleep = 0.2
+oled_sleep = 1
+terminal_ui_sleep = 0.1
+button_push_loop = 0.01
+db = DatabaseConnection()
 
 # Konfiguracja zapisywania logów do pliku
 logging.basicConfig(filename='error_log.txt', level=logging.ERROR, 
@@ -74,12 +85,11 @@ class Display:
         self.previous_data = {}
         self.text_positions = {
             'alt': (2, 0), 
-            'move_status': (72, 0),
+            #'move_status': (72, 0),
             'csv_status': (2, 14), 
-            'measurements': (90, 14),
+            #'measurements': (90, 14),
             'duration': (2, 26),
             'hdop': (2, 38),'sat': (60, 38),
-            'status': (2, 14)
         }
 
     def clear(self):
@@ -139,7 +149,7 @@ class Display:
 def oled_update_thread(display, stop_event, ui_data):
     while not stop_event.is_set():
         display.display_data(ui_data)
-        time.sleep(0.05)  # Aktualizacja co 50 ms
+        time.sleep(oled_sleep)  # Aktualizacja co 100 ms max
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -168,15 +178,26 @@ def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
             ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
             ui_data['move_status'] = "W miejscu"
 
-        time.sleep(0.05)  # Próbkowanie MPU6050 co 5 ms (200 Hz)
+        time.sleep(mpu6050_sleep)  # Próbkowanie MPU6050 co 150ms
 
 # Wątek do odczytu z L76K
-def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesurements, pause_mesure):
+def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue):
     global mesurement_saveing
+    last_measurement_time = None
+    
     while not stop_event.is_set():
         l76k.L76X_Gat_GNGGA()
         if l76k.Status == 1:
-            mesure_time = datetime.now().strftime("%H:%M:%S")
+            current_time = datetime.now()
+            mesure_timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Obliczanie opóźnienia pomiędzy pomiarami
+            if last_measurement_time is not None:
+                delay = (current_time - last_measurement_time).total_seconds()
+                ui_data['delay'] = delay
+            else:
+                ui_data['delay'] = None
+            last_measurement_time = current_time
             
             # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
             ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
@@ -185,62 +206,68 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, csv_file, mesureme
             ui_data['alt'] = l76k.Altitude
             ui_data['sat'] = l76k.Satellites
             ui_data['hdop'] = l76k.HDOP
-            ui_data['quality_index'] = l76k.Quality_Indicator
+            ui_data['vdop'] = l76k.VDOP
+            ui_data['pdop'] = l76k.PDOP
+            ui_data['gnss_system'] = l76k.GNSS_system
             
             # Zapis do CSV, tylko gdy wykryto ruch
-            if movement_detected[0]:
-                if not pause_mesure.state:
-                    ui_data['csv_status'] = "Aktywny"
-                    with open(csv_file, 'a', newline='') as file:
-                        mesurements += 1
-                        ui_data['mesurements'] = mesurements
-                        writer = csv.writer(file)
-                        writer.writerow([str(mesure_time), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
-                else:
-                    ui_data['csv_status'] = "Zatrzymany"
+            if movement_detected[0] and not pause_mesure.state:
+                ui_data['csv_status'] = "Aktywny"
+                if l76k.Altitude:
+                    mesurements += 1
+                    ui_data['mesurements'] = mesurements
+                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+            else:
+                ui_data['csv_status'] = "Zatrzymany"
         
-        #time.sleep(0.5)  # Próbkowanie GPS co 500 ms
+        time.sleep(l76k_sleep)  # Próbkowanie GPS co 500 ms
+
+def csv_writer_thread(csv_file, data_queue, stop_event):
+    with open(csv_file, 'a', newline='') as file:
+        writer = csv.writer(file)
+        while not stop_event.is_set():
+            try:
+                data = data_queue.get(timeout=1)
+                writer.writerow(data)
+                file.flush()  # upewnienie sie ze dane sa zapisane
+            except Empty:
+                continue
+            except Exception as e:
+                logging.error(f"Error in CSV writer thread: {str(e)}")
+                break 
 
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
     measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
     folder_path = "measurements"
-    csv_file = os.path.join(folder_path, f'dane{measure_datetime}.csv')
+    file_name = f'{measure_datetime}.csv'
+    csv_file = os.path.join(folder_path, file_name)
     
     # Tworzenie pliku z nagłówkiem
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["Time", "Latitude", "Longitude", "Altitude"])
+        writer.writerow(["time", "latitude", "longitude", "altitude"])
     
-    #print(f"Zapis pomiarów do pliku: {csv_file}")
-    return csv_file
+    return csv_file, file_name
+
+def check_db_connection(db):
+    try:
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        return True
+    except OperationalError:
+        return False
+
+# Funkcja do sprawdzania długości kolejki
+def check_queue_length(measurements_queue):
+    queue_length = measurements_queue.qsize()
+    return queue_length
 
 def main(stdscr):
-    global stop_event
-    curses.curs_set(0)
-    display = Display()
+    global stop_event, db
+    NO_OLED = False
 
-    # Display initialization message on OLED
-    display.display_message("Terrain Mapper\nInicjalizacja...")
-
-    # Event do zatrzymywania wątków
-    stop_event = threading.Event()
-    
-    #inicjalizacja przycisku
-    stop_mesure = Button(13, 1, False, stop_event.set)
-    pause_mesure = Button(26, 0.3, False)
-    start_mesure = Button(26, 0.3, False)
-    
-    conf = config(baudrate=9600, mpu_address=0x68)
-    l76k=L76X.L76X()
-    l76k.L76X_Send_Command(l76k.SET_COLD_START)
-    #print("L76K cold start")
-    #time.sleep(30)
-    l76k.L76X_Set_Baudrate(9600)
-    l76k.L76X_Send_Command(l76k.SET_POS_FIX_400MS)
-    l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
-    l76k.L76X_Exit_BackupMode()
-    
     # Współdzielona pamięć do przechowywania danych dla UI terminala
     ui_data = {
         'duration': None,
@@ -255,33 +282,106 @@ def main(stdscr):
         'move_status': None,
         'mesurements': None,
         'hdop': None,
+        'vdop': None,
+        'pdop': None,
+        'gnss_system': None,
         'quality_index': None,
-        'csv_status': None
+        'csv_status': None,
+        'queue_length': None,
+        'delay': None,
+        'db_connection': None,
+        'wifi_connection': None
     }
+
+    curses.curs_set(0)
+    display = Display()
+    display.display_message("Terrain Mapper\nInicjalizacja...", 15)
+
+    # Inicjalizacja połączenia z bazą danych
+    try:
+        db = DatabaseConnection(
+            dbname="terrain_measurements",
+            user="pkrypel",
+            password="20122002",
+            host="192.168.43.183", #laptop ip na wifi z tel
+            port="5432" #5432 na kompie
+        )
+        logging.info("Połączenie z bazą danych zostało zainicjalizowane.")
+    except Exception as e:
+        logging.error(f"Nie udało się zainicjalizować połączenia z bazą danych: {e}")
+        sys.exit(1)
+
+    if check_db_connection(db):
+            ui_data['db_connection'] = "Połączono"
+            print("Połączono z bazą danych")
+    else:
+        ui_data['db_connection'] = "Brak połączenia" 
+        print("Nie można połączyć się z bazą danych")
+
+    # Event do zatrzymywania wątków
+    stop_event = threading.Event()
+    
+    conf = config(baudrate=9600, mpu_address=0x68)
+    l76k=L76X.L76X()
+    l76k.L76X_Send_Command(l76k.SET_COLD_START)
+    # print("L76K cold start")
+    # time.sleep(30)
     
     # Flaga wykrycia ruchu
     movement_detected = [False]
     
+    #inicjalizacja przyciskuów
+    stop_mesure = Button(26, 1, False, stop_event.set) #red
+    pause_mesure = Button(13, 0.3, False) #yellow
+    start_mesure = Button(6, 0.3, False)  #green
+    
     print("Oczekiwanie na naciśnięcie przycisku start")
-    display.display_message("Wcisnij przycisk\nstart")
+    display.display_message("Wcisnij przycisk\nstart", 15)
+    stop_flag = stop_mesure.state
+    pause_flag = pause_mesure.state
     while not start_mesure.state:
         start_mesure.handle_button()
-        time.sleep(0.1)
-
+        if stop_mesure.state is not stop_flag:
+            l76k.L76X_Send_Command(l76k.SET_COLD_START)
+            sys.exit(0)
+        
+        #opcja uruchomienia programu bez odświerzania wyświetlacza OLED
+        if pause_mesure.state is not pause_flag:
+            NO_OLED = True
+            display.display_message("Pomiar bez podglądu\nOLED OFF\nWcisnij start", 13)
+            while not start_mesure.state:
+                start_mesure.handle_button()
+                time.sleep(button_push_loop)
+                
+        time.sleep(button_push_loop)
+        
+    l76k.L76X_Set_Baudrate(9600)
+    l76k.L76X_Send_Command(l76k.SET_POS_FIX_200MS)
+    l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
+    l76k.L76X_Exit_BackupMode()
+    
     # Inicjalizacja CSV
     display.clear()
-    csv_file = init_csv()
+    csv_file, file_name = init_csv()
     mesurements = 0 #liczba zapisanych pomiarów
-    
+    data_queue = Queue()
+
     # Uruchamianie wątków
+    if not NO_OLED:
+        oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+        oled_thread.start()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
-    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected ,csv_file, mesurements, pause_mesure))
-    oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
+    csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
     gps_thread.start()
-    oled_thread.start()
     mpu_thread.start()
-    start_time = datetime.now()
+    csv_thread.start()
     
+    start_time = datetime.now()
+    if NO_OLED:
+        display.display_message("************\nTRWA POMIAR\n_________________", 17)
+    stop_mesure.state = False
+    pause_mesure.state = False
     try:
         while not stop_event.is_set():
             stdscr.clear()
@@ -295,6 +395,14 @@ def main(stdscr):
                 ui_data['csv_status'] = "Aktywny"
             else:
                 ui_data['csv_status'] = "Zatrzymany"
+                
+            ui_data['queue_length'] = check_queue_length(data_queue)
+
+            if int(time.time()) % 60 == 0:
+                if check_db_connection(db):
+                    ui_data['db_connection'] = "Połączono"
+                else:
+                    ui_data['db_connection'] = "Brak połączenia"
             
             # Nagłówek czujnika ruchu UI TERMINALA
             stdscr.addstr(0, 0, f"[MPU6050] Stan urządzenia: {ui_data['move']}")
@@ -302,7 +410,7 @@ def main(stdscr):
             stdscr.addstr(2, 0, f"Żyroskop: X={ui_data['gyro']['x']:.2f}, Y={ui_data['gyro']['y']:.2f}, Z={ui_data['gyro']['z']:.2f}")
             
             # Nagłówek GPS UI TERMINALA
-            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}")
+            stdscr.addstr(4, 0, f"[L76K] {ui_data['time']}, Czas pomiaru {ui_data['duration']}, Delay: {ui_data['delay']} Zapis pomiarów: {ui_data['csv_status']}, Pomiary: {ui_data['mesurements']}, W kolejce do zapisu: {ui_data['queue_length']}")
             try:
                 # UI TERMINALA
                 lat = f"{ui_data['lat']:.6f}" if ui_data['lat'] is not None else "N/A"
@@ -310,44 +418,76 @@ def main(stdscr):
                 alt = f"{ui_data['alt']:.2f}" if ui_data['alt'] is not None else "N/A"
                 sat = f"{ui_data['sat']}" if ui_data['sat'] is not None else "N/A"
                 hdop = f"{ui_data['hdop']}" if ui_data['hdop'] is not None else "N/A"
+                vdop = f"{ui_data['vdop']}" if ui_data['vdop'] is not None else "N/A"
+                pdop = f"{ui_data['pdop']}" if ui_data['pdop'] is not None else "N/A"
+                gnss_system = f"{ui_data['gnss_system']}" if ui_data['gnss_system'] is not None else "N/A"
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Satellites: {sat}")
-                stdscr.addstr(6, 0, f"index HDOP: {hdop}")
+                stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, PDOP: {pdop}, GNSS: {gnss_system}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
-                stdscr.addstr(6, 0, "Quality Indicator: N/A, HDOP: N/A")
+                stdscr.addstr(6, 0, "HDOP: N/A, VDOP: N/A, PDOP: N/A, GNSS: N/A")
+
+            stdscr.addstr(7, 0, f"Połączenie z bazą danych: {ui_data['db_connection']}")
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
-            time.sleep(0.1)  # Aktualizacja co 100 ms
+            time.sleep(terminal_ui_sleep)
             
     except KeyboardInterrupt:
             pass
     finally:
+        if not NO_OLED:
+            oled_thread.join()
         stop_event.set()
         mpu_thread.join()
         gps_thread.join()
-        oled_thread.join()
+        csv_thread.join()
         
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
         display.clear()
         if stop_mesure.state:
             start_mesure.state = False
-            display.display_message("Pomiar\nzakończony :)")
+            if not NO_OLED:
+                display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
+            else:
+                display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
             print("\nProgram zakończony pomyślnie.")
+            time.sleep(1)
+            
+            # Próba importu danych do bazy po zakończeniu pomiaru
+            if check_db_connection(db):
+                try:
+                    db.import_csv_data(csv_file)
+                    print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
+                    display.display_message()
+                    ui_data['db_connection'] = "Zaimportowano dane"
+                except Exception as e:
+                    print(f"Błąd podczas importu danych do bazy: {str(e)}")
+                    ui_data['db_connection'] = "Błąd importu"
+            else:
+                print("Brak połączenia z bazą danych. Import nie został wykonany.")
+                ui_data['db_connection'] = "Brak połączenia"
+            # Zamknij połączenie z bazą danych
+            db.close()
+            time.sleep(2)
         else:
             start_mesure.state = False
-            display.display_message("Wystapil blad :(")
-            print("\nProgram zatrzymany. Sprawdź plik error_log.txt, aby zobaczyć szczegóły błędu.")
+            display.display_message(f"\nProgram zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
+            print("\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
+            time.sleep(1.25)
 
         stdscr.refresh()
         #stdscr.getch()  # Czekaj na naciśnięcie klawisza
-
-        print("\nWciśnij przycisk start, aby rozpocząć nowy pomiar")
-        display.display_message("Wcisnij start aby\nzaczac nowy pomiar")
+        print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
+        display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+        
+        flag = stop_mesure.state
         while not start_mesure.state:
             start_mesure.handle_button()
-            time.sleep(0.1)
+            if stop_mesure.state is not flag:
+                sys.exit(0)
+            time.sleep(button_push_loop)
 
 if __name__ == "__main__":
     while True:
