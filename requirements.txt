@@ -1,0 +1,7 @@
+curses
+numpy
+pandas
+folium
+psycopg2
+RPi.GPIO
+Pillow
