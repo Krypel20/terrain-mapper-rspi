@@ -38,7 +38,14 @@ class Button:
         self.debounce_time = debounce_time
         self.action = action
         self.state = state
+
+	# Usuń poprzednią detekcję zdarzeń przed dodaniem nowej
         GPIO.setmode(GPIO.BCM)
+        try:
+            GPIO.remove_event_detect(self.pin)
+        except:
+            pass  # Ignoruj błąd jeśli nie było wcześniejszej detekcji
+
         GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         GPIO.add_event_detect(self.pin, GPIO.FALLING, callback=self.handle_button, bouncetime=200)
     
@@ -303,8 +310,8 @@ def main(stdscr):
             dbname="terrain_measurements",
             user="pkrypel",
             password="20122002",
-            host="192.168.43.183", #laptop ip na wifi z tel
-            port="5432" #5432 na kompie
+            host="192.168.20.13", #PC ip na wifi domowym
+            port="5433" #5433 pc 5432 laptop
         )
         logging.info("Połączenie z bazą danych zostało zainicjalizowane.")
     except Exception as e:
@@ -442,7 +449,7 @@ def main(stdscr):
         mpu_thread.join()
         gps_thread.join()
         csv_thread.join()
-        
+
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
         display.clear()
