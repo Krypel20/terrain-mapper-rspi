@@ -73,13 +73,6 @@ class SafeThread(Thread):
         except Exception:
             thread_exception_handler(sys.exc_info())
 
-# Funkcja do obsługi wyjątków w wątkach
-def thread_exception_handler(args):
-    exc_type, exc_value, exc_traceback = args
-    logging.error("Nieobsłużony wyjątek w wątku:\n" + 
-                  ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
-    stop_event.set()  # Zatrzymaj wszystkie wątki
-
 class Display:
     def __init__(self, default_font_size=12):
         self.oled = OLED_0in96.OLED_0in96()
@@ -151,6 +144,13 @@ class Display:
         if updated:
             self.oled.ShowImage(self.oled.getbuffer(self.image))
             self.last_update_time = current_time
+
+# Funkcja do obsługi wyjątków w wątkach
+def thread_exception_handler(args):
+    exc_type, exc_value, exc_traceback = args
+    logging.error("Nieobsłużony wyjątek w wątku:\n" + 
+                  ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
+    stop_event.set()  # Zatrzymaj wszystkie wątki
 
 # Funkcja do aktualizacji wyświetlacza OLED
 def oled_update_thread(display, stop_event, ui_data):
@@ -229,6 +229,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
         
         time.sleep(l76k_sleep)  # Próbkowanie GPS co 500 ms
 
+# Wątek do zapisywania bierzących pomiarów do pliku CSV
 def csv_writer_thread(csv_file, data_queue, stop_event):
     with open(csv_file, 'a', newline='') as file:
         writer = csv.writer(file)
@@ -243,6 +244,7 @@ def csv_writer_thread(csv_file, data_queue, stop_event):
                 logging.error(f"Error in CSV writer thread: {str(e)}")
                 break 
 
+# Funkcja do inicjalizacji pliku CSV
 def init_csv():
     # Nazwa pliku na podstawie czasu rozpoczęcia sesji
     measure_datetime = datetime.now().strftime("%d%m%y_%H%M%S")
@@ -257,6 +259,7 @@ def init_csv():
     
     return csv_file, file_name
 
+# Funkcja do sprawdzania połączenia z bazą danych
 def check_db_connection(db):
     try:
         with db.connect() as conn:
@@ -306,13 +309,7 @@ def main(stdscr):
 
     # Inicjalizacja połączenia z bazą danych
     try:
-        db = DatabaseConnection(
-            dbname="terrain_measurements",
-            user="pkrypel",
-            password="20122002",
-            host="192.168.20.13", #PC ip na wifi domowym
-            port="5433" #5433 pc 5432 laptop
-        )
+        db = DatabaseConnection()
         logging.info("Połączenie z bazą danych zostało zainicjalizowane.")
     except Exception as e:
         logging.error(f"Nie udało się zainicjalizować połączenia z bazą danych: {e}")
@@ -465,16 +462,13 @@ def main(stdscr):
             # Próba importu danych do bazy po zakończeniu pomiaru
             if check_db_connection(db):
                 try:
-                    db.import_csv_data(csv_file)
+                    db.upload_csv_to_db(csv_file)
                     print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
-                    display.display_message()
-                    ui_data['db_connection'] = "Zaimportowano dane"
+                    display.display_message(f"Pomiar pomyslnie\n zapisany do\nbazy danych :)", 12)
                 except Exception as e:
                     print(f"Błąd podczas importu danych do bazy: {str(e)}")
-                    ui_data['db_connection'] = "Błąd importu"
             else:
                 print("Brak połączenia z bazą danych. Import nie został wykonany.")
-                ui_data['db_connection'] = "Brak połączenia"
             # Zamknij połączenie z bazą danych
             db.close()
             time.sleep(2)
