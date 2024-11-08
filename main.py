@@ -469,8 +469,8 @@ def main(stdscr):
                     print(f"Błąd podczas importu danych do bazy: {str(e)}")
             else:
                 print("Brak połączenia z bazą danych. Import nie został wykonany.")
-            # Zamknij połączenie z bazą danych
-            db.close()
+                display.display_message(f"Nie udalo sie\n zapisac pomiaru\n do bazy danych", 11)
+                
             time.sleep(2)
         else:
             start_mesure.state = False
@@ -483,13 +483,215 @@ def main(stdscr):
         print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
         display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
         
-        flag = stop_mesure.state
+        stop_flag = stop_mesure.state
+        save_flag = pause_mesure.state
         while not start_mesure.state:
             start_mesure.handle_button()
-            if stop_mesure.state is not flag:
+            if stop_mesure.state is not stop_flag:
+                # Zamknij połączenie z bazą danych
+                db.close()
                 sys.exit(0)
+            if pause_mesure.state is not save_flag:
+                db.import_all_csv_files()
             time.sleep(button_push_loop)
 
+def main_service():
+    global stop_event, db
+    NO_OLED = False
+
+    # Współdzielona pamięć do przechowywania danych dla UI
+    ui_data = {
+        'duration': None,
+        'time': None,
+        'lat': None,
+        'lon': None,
+        'alt': None,
+        'sat': None,
+        'accel': {'x': 0, 'y': 0, 'z': 0},
+        'gyro': {'x': 0, 'y': 0, 'z': 0},
+        'move': None,
+        'move_status': None,
+        'mesurements': None,
+        'hdop': None,
+        'vdop': None,
+        'pdop': None,
+        'gnss_system': None,
+        'quality_index': None,
+        'csv_status': None,
+        'queue_length': None,
+        'delay': None,
+        'db_connection': None,
+        'wifi_connection': None
+    }
+
+    display = Display()
+    display.display_message("Terrain Mapper\nInicjalizacja...", 15)
+
+    # Inicjalizacja połączenia z bazą danych
+    try:
+        db = DatabaseConnection()
+        logging.info("Połączenie z bazą danych zostało zainicjalizowane.")
+    except Exception as e:
+        logging.error(f"Nie udało się zainicjalizować połączenia z bazą danych: {e}")
+        sys.exit(1)
+
+    if check_db_connection(db):
+        ui_data['db_connection'] = "Połączono"
+        print("Połączono z bazą danych")
+    else:
+        ui_data['db_connection'] = "Brak połączenia" 
+        print("Nie można połączyć się z bazą danych")
+
+    # Event do zatrzymywania wątków
+    stop_event = threading.Event()
+    
+    conf = config(baudrate=9600, mpu_address=0x68)
+    l76k=L76X.L76X()
+    l76k.L76X_Send_Command(l76k.SET_COLD_START)
+    
+    # Flaga wykrycia ruchu
+    movement_detected = [False]
+    
+    #inicjalizacja przyciskuów
+    stop_mesure = Button(26, 1, False, stop_event.set) #red
+    pause_mesure = Button(13, 0.3, False) #yellow
+    start_mesure = Button(6, 0.3, False)  #green
+    
+    print("Oczekiwanie na naciśnięcie przycisku start")
+    display.display_message("Wcisnij przycisk\nstart", 15)
+    stop_flag = stop_mesure.state
+    pause_flag = pause_mesure.state
+    while not start_mesure.state:
+        start_mesure.handle_button()
+        if stop_mesure.state is not stop_flag:
+            l76k.L76X_Send_Command(l76k.SET_COLD_START)
+            sys.exit(0)
+        
+        if pause_mesure.state is not pause_flag:
+            NO_OLED = True
+            display.display_message("Pomiar bez podglądu\nOLED OFF\nWcisnij start", 13)
+            while not start_mesure.state:
+                start_mesure.handle_button()
+                time.sleep(button_push_loop)
+                
+        time.sleep(button_push_loop)
+        
+    l76k.L76X_Set_Baudrate(9600)
+    l76k.L76X_Send_Command(l76k.SET_POS_FIX_200MS)
+    l76k.L76X_Send_Command(l76k.SET_NMEA_OUTPUT)
+    l76k.L76X_Exit_BackupMode()
+    
+    # Inicjalizacja CSV
+    display.clear()
+    csv_file, file_name = init_csv()
+    mesurements = 0 #liczba zapisanych pomiarów
+    data_queue = Queue()
+
+    # Uruchamianie wątków
+    if not NO_OLED:
+        oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
+        oled_thread.start()
+    mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
+    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
+    csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
+    
+    threads = [gps_thread, mpu_thread, csv_thread]
+    if not NO_OLED:
+        threads.append(oled_thread)
+
+    for thread in threads:
+        thread.start()
+    
+    start_time = datetime.now()
+    if NO_OLED:
+        display.display_message("************\nTRWA POMIAR\n_________________", 17)
+    stop_mesure.state = False
+    pause_mesure.state = False
+    
+    try:
+        while not stop_event.is_set():
+            stop_mesure.handle_button()
+            pause_mesure.handle_button()
+            
+            elapsed_time = datetime.now() - start_time
+            ui_data['duration'] = str(elapsed_time).split('.')[0]
+            
+            if not pause_mesure.state:
+                ui_data['csv_status'] = "Aktywny"
+            else:
+                ui_data['csv_status'] = "Zatrzymany"
+                
+            ui_data['queue_length'] = check_queue_length(data_queue)
+
+            if int(time.time()) % 60 == 0:
+                if check_db_connection(db):
+                    ui_data['db_connection'] = "Połączono"
+                else:
+                    ui_data['db_connection'] = "Brak połączenia"
+            
+            time.sleep(terminal_ui_sleep)
+            
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        for thread in threads:
+            thread.join()
+
+        display.clear()
+        if stop_mesure.state:
+            start_mesure.state = False
+            if not NO_OLED:
+                display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
+            else:
+                display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
+            print("\nProgram zakończony pomyślnie.")
+            time.sleep(1)
+            
+            # Próba importu danych do bazy po zakończeniu pomiaru
+            if check_db_connection(db):
+                try:
+                    db.upload_csv_to_db(csv_file)
+                    print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
+                    display.display_message(f"Pomiar pomyslnie\n zapisany do\nbazy danych :)", 12)
+                except Exception as e:
+                    print(f"Błąd podczas importu danych do bazy: {str(e)}")
+            else:
+                print("Brak połączenia z bazą danych. Import nie został wykonany.")
+                display.display_message(f"Nie udalo sie\n zapisac pomiaru\n do bazy danych", 11)
+                
+            time.sleep(2)
+        else:
+            start_mesure.state = False
+            display.display_message(f"\nProgram zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
+            print("\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
+            time.sleep(1.25)
+
+        print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
+        display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+        
+        stop_flag = stop_mesure.state
+        save_flag = pause_mesure.state
+        while not start_mesure.state:
+            start_mesure.handle_button()
+            if stop_mesure.state is not stop_flag:
+                # Zamknij połączenie z bazą danych
+                db.close()
+                sys.exit(0)
+            if pause_mesure.state is not save_flag:
+                db.import_all_csv_files()
+            time.sleep(button_push_loop)
+
+
 if __name__ == "__main__":
-    while True:
-        curses.wrapper(main)
+    # Sprawdź czy skrypt jest uruchomiony jako usługa
+    if os.environ.get('INVOKED_BY_SYSTEMD') == 'yes':
+        while True:
+            try:
+                main_service()
+            except Exception as e:
+                logging.error(f"Error in main service: {str(e)}")
+    else:
+        while True:
+            # Uruchom w trybie interaktywnym z curses
+            curses.wrapper(main)

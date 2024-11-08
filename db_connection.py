@@ -80,10 +80,6 @@ class DatabaseConnection:
                 for row in csv_reader:
                     time_str, lat, lon, alt = row
                     
-                    # Dodaj aktualną datę jeśli jest tylko czas
-                    if ':' in time_str and len(time_str.split(':')) == 3:
-                        time_str = f"{datetime.now().date()} {time_str}"
-                    
                     cursor.execute(
                         sql.SQL("""
                             INSERT INTO {} (measurement_time, location, altitude)
@@ -91,20 +87,30 @@ class DatabaseConnection:
                         """).format(sql.Identifier(table_name)),
                         (time_str, float(lon), float(lat), float(alt))
                     )
+                    
+                if ':' in time_str and len(time_str.split(':')) == 3:
+                    if ' ' not in time_str:
+                        time_str = f"{datetime.now().date()} {time_str}"
                 
                 # Utwórz indeks przestrzenny
                 cursor.execute(sql.SQL("""
-                    CREATE INDEX IF NOT EXISTS idx_{}_location 
+                    CREATE INDEX IF NOT EXISTS {} 
                     ON {} USING GIST (location)
-                """).format(sql.Identifier(table_name), sql.Identifier(table_name)))
+                """).format(
+                    sql.Identifier(f"idx_{table_name}_location"), 
+                    sql.Identifier(table_name)
+                ))  
                 
                 # Dodaj wpis do tabeli measurement_sessions
                 cursor.execute(sql.SQL("""
                     INSERT INTO measurement_sessions (session_name, start_time, end_time, location_name)
-                    SELECT %s, MIN(measurement_time), MAX(measurement_time), %s
+                    SELECT {}, MIN(measurement_time), MAX(measurement_time), {}
                     FROM {}
-                """).format(sql.Identifier(table_name)),
-                (file_name, file_name.split('_')[0]))
+                """).format(
+                    sql.Literal(file_name),
+                    sql.Literal(file_name.split('_')[0]),
+                    sql.Identifier(table_name)
+                ))
                 
                 conn.commit()
                 print(f"Dane zostały pomyślnie zaimportowane do tabeli {table_name}")
