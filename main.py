@@ -88,7 +88,7 @@ class Display:
             #'move_status': (72, 0),
             'csv_status': (2, 14), 
             #'measurements': (90, 14),
-            'duration': (2, 26),
+            'duration': (2, 26), 'speed': (20, 26),
             'hdop': (2, 38),'sat': (60, 38),
         }
 
@@ -133,13 +133,11 @@ class Display:
 
         updated = False
 
-        #updated |= self.update_field('move_status', f"{ui_data['move_status']}")
         updated |= self.update_field('duration', f"{ui_data['duration']}")
+        updated |= self.update_field('speed', f"Speed: {ui_data['speed']} {ui_data['headed']}" if ui_data['speed'] is not None else "Speed: N/A")
         updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
-        #updated |= self.update_field('measurements', f"- {ui_data['mesurements']}")
         updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
-        #updated |= self.update_field('sat', f"sat: {ui_data['sat']}" if ui_data['sat'] is not None else "sat: N/A")
-        updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} Sat: {ui_data['sat']}" if ui_data['sat'] is not None else "HDOP: N/A Sat: N/A")
+        updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} VDOP: {ui_data['vdop']}" if ui_data['vdop'] is not None else "HDOP: N/A VDOP: N/A")
 
         if updated:
             self.oled.ShowImage(self.oled.getbuffer(self.image))
@@ -216,6 +214,8 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             ui_data['vdop'] = l76k.VDOP
             ui_data['pdop'] = l76k.PDOP
             ui_data['gnss_system'] = l76k.GNSS_system
+            ui_data['speed'] = l76k.speed
+            ui_data['headed'] = l76k.direction
             
             # Zapis do CSV, tylko gdy wykryto ruch
             if movement_detected[0] and not pause_mesure.state:
@@ -223,7 +223,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                 if l76k.Altitude:
                     mesurements += 1
                     ui_data['mesurements'] = mesurements
-                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude])
+                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude, l76k.HDOP]) #powinien byc VDOP ale czujnik go nie zwraca poprawnie
             else:
                 ui_data['csv_status'] = "Zatrzymany"
         
@@ -255,7 +255,7 @@ def init_csv():
     # Tworzenie pliku z nagłówkiem
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["time", "latitude", "longitude", "altitude"])
+        writer.writerow(["time", "latitude", "longitude", "altitude", "VDOP"])
     
     return csv_file, file_name
 
@@ -300,7 +300,9 @@ def main(stdscr):
         'queue_length': None,
         'delay': None,
         'db_connection': None,
-        'wifi_connection': None
+        'wifi_connection': None,
+        'speed': None,
+        'headed': None
     }
 
     curses.curs_set(0)
@@ -424,9 +426,11 @@ def main(stdscr):
                 hdop = f"{ui_data['hdop']}" if ui_data['hdop'] is not None else "N/A"
                 vdop = f"{ui_data['vdop']}" if ui_data['vdop'] is not None else "N/A"
                 pdop = f"{ui_data['pdop']}" if ui_data['pdop'] is not None else "N/A"
+                speed = f"{ui_data['speed']}" if ui_data['speed'] is not None else "N/A"
+                headed = f"{ui_data['headed']}" if ui_data['headed'] is not None else "N/A"
                 gnss_system = f"{ui_data['gnss_system']}" if ui_data['gnss_system'] is not None else "N/A"
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Satellites: {sat}")
-                stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, PDOP: {pdop}, GNSS: {gnss_system}")
+                stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, Speed: {speed} Direction: {headed}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
                 stdscr.addstr(6, 0, "HDOP: N/A, VDOP: N/A, PDOP: N/A, GNSS: N/A")
@@ -521,7 +525,9 @@ def main_service():
         'queue_length': None,
         'delay': None,
         'db_connection': None,
-        'wifi_connection': None
+        'wifi_connection': None,
+        'speed': None,
+        'headed': None
     }
 
     display = Display()

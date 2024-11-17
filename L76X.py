@@ -37,6 +37,8 @@ class L76X(object):
     Status = 0
     Satellites = 0
     Quality_Indicator = 0
+    speed = 0
+    direction = None
     HDOP = 0.0  # Dokładność pozioma (HDOP)
     VDOP = 0.0  # Dokładność pionowa (VDOP)
     PDOP = 0.0  # Dokładność położenia (PDOP)
@@ -164,6 +166,18 @@ class L76X(object):
             self.PDOP = self.get_pdop(gngsa_line)
             self.VDOP = self.get_vdop(gngsa_line)
             self.GNSS_system = self.get_gnss_system(gngsa_line)
+
+        # Odczyt danych z frazy GNRMC
+        start_index = data.find("$GNRMC")
+        end_index = data.find("\n", start_index)
+        if end_index == -1:  # Jeśli to ostatnia linia w ciągu
+            gnrmc_line = data[start_index:]
+        else:
+            gnrmc_line = data[start_index:end_index]
+        
+        if gnrmc_line:
+            self.speed = self.get_speed(gnrmc_line)
+            self.direction = self.get_direction(gnrmc_line)
             
         #print(data)
         data = '\r\n'
@@ -274,6 +288,9 @@ class L76X(object):
                 return None
     
     def get_vdop(self, nmea_sentence):
+        """
+        Funkcja parsująca VDOP (dokładność pionowa) z frazy $GNGSA.
+        """
         fields = nmea_sentence.split(',')
         if fields[0] == "$GNGSA":
             try:
@@ -286,6 +303,38 @@ class L76X(object):
             except (IndexError, ValueError):
                 return None
     
+    def get_speed(self, nmea_sentence):
+        """
+        Funkcja parsująca prędkość z frazy $GNRMC.
+        """
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNRMC":
+            try:
+                # Prędkość znajduje się w polu 7
+                speed = fields[7]
+                if speed:
+                    return float(speed)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+            
+    def get_direction(self, nmea_sentence):
+        """
+        Funkcja parsująca kierunek z frazy $GNRMC.
+        """
+        fields = nmea_sentence.split(',')
+        if fields[0] == "$GNRMC":
+            try:
+                # Kierunek znajduje się w polu 8
+                direction = fields[8]
+                if direction:
+                    return float(direction)
+                else:
+                    return None
+            except (IndexError, ValueError):
+                return None
+
     def get_gnss_system(self, nmea_sentence):
         fields = nmea_sentence.split(',')
         if fields[0] == "$GNGSA":

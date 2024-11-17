@@ -78,14 +78,14 @@ class DatabaseConnection:
                 
                 # Wstaw dane
                 for row in csv_reader:
-                    time_str, lat, lon, alt = row
+                    time_str, lat, lon, alt, vdop = row
                     
                     cursor.execute(
                         sql.SQL("""
-                            INSERT INTO {} (measurement_time, location, altitude)
+                            INSERT INTO {} (measurement_time, location, altitude, vdop)
                             VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
                         """).format(sql.Identifier(table_name)),
-                        (time_str, float(lon), float(lat), float(alt))
+                        (time_str, float(lon), float(lat), float(alt), float(vdop))
                     )
                     
                 if ':' in time_str and len(time_str.split(':')) == 3:
