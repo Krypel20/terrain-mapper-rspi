@@ -66,31 +66,33 @@ class DatabaseConnection:
                     print(f"Tabela {table_name} już istnieje. Pomijanie importu.")
                     return False
                 
-                # Utwórz tabelę
+                # Utwórz tabelę z dodaną kolumną vdop
                 cursor.execute(sql.SQL("""
                     CREATE TABLE IF NOT EXISTS {} (
                         id SERIAL PRIMARY KEY,
                         measurement_time TIMESTAMP WITHOUT TIME ZONE,
                         location GEOGRAPHY(POINT, 4326),
-                        altitude NUMERIC(10, 2)
+                        altitude NUMERIC(10, 2),
+                        vdop NUMERIC(10, 2)
                     )
                 """).format(sql.Identifier(table_name)))
                 
-                # Wstaw dane
+                # Wstaw dane z uwzględnieniem vdop
                 for row in csv_reader:
                     time_str, lat, lon, alt, vdop = row
+                    
+                    # Konwersja formatu czasu jeśli potrzebna
+                    if ':' in time_str and len(time_str.split(':')) == 3:
+                        if ' ' not in time_str:
+                            time_str = f"{datetime.now().date()} {time_str}"
                     
                     cursor.execute(
                         sql.SQL("""
                             INSERT INTO {} (measurement_time, location, altitude, vdop)
-                            VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+                            VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s)
                         """).format(sql.Identifier(table_name)),
                         (time_str, float(lon), float(lat), float(alt), float(vdop))
                     )
-                    
-                if ':' in time_str and len(time_str.split(':')) == 3:
-                    if ' ' not in time_str:
-                        time_str = f"{datetime.now().date()} {time_str}"
                 
                 # Utwórz indeks przestrzenny
                 cursor.execute(sql.SQL("""
@@ -104,13 +106,10 @@ class DatabaseConnection:
                 # Dodaj wpis do tabeli measurement_sessions
                 cursor.execute(sql.SQL("""
                     INSERT INTO measurement_sessions (session_name, start_time, end_time, location_name)
-                    SELECT {}, MIN(measurement_time), MAX(measurement_time), {}
+                    SELECT %s, MIN(measurement_time), MAX(measurement_time), %s
                     FROM {}
-                """).format(
-                    sql.Literal(file_name),
-                    sql.Literal(file_name.split('_')[0]),
-                    sql.Identifier(table_name)
-                ))
+                """).format(sql.Identifier(table_name)),
+                (file_name, file_name.split('_')[0]))
                 
                 conn.commit()
                 print(f"Dane zostały pomyślnie zaimportowane do tabeli {table_name}")
