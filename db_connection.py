@@ -10,8 +10,8 @@ class DatabaseConnection:
             dbname='terrain_measurements', 
             user='pkrypel', 
             password='20122002', 
-            host='192.168.20.13', #192.168.20.13 // 192.168.43.183
-            port=5433 #5433 // 5434
+            host='192.168.43.183', #192.168.20.13 // 192.168.43.183
+            port=5434 #5433 // 5434
         ):
         self.dbname = dbname
         self.user = user
@@ -52,21 +52,24 @@ class DatabaseConnection:
         cursor = conn.cursor()
         
         try:
-            # Odczytaj dane z pliku CSV
+            # Dodaj logowanie dla debugowania
+            print(f"Rozpoczynam import pliku: {csv_file_path}")
+            
             with open(csv_file_path, 'r') as f:
-                csv_reader = csv.reader(f)
-                header = next(csv_reader)  # Pomiń nagłówek
+                csv_reader = csv.DictReader(f)  # Użyj DictReader zamiast reader
                 
-                # Pobierz nazwę pliku bez ścieżki i rozszerzenia
-                file_name = csv_file_path.split('/')[-1].replace('.csv', '')
+                # Pobierz nazwę pliku
+                file_name = os.path.basename(csv_file_path).replace('.csv', '')
                 table_name = f"session_{file_name.lower()}"
                 
-                # Sprawdź czy tabela już istnieje
+                print(f"Tworzę tabelę: {table_name}")
+                
+                # Sprawdź czy tabela istnieje
                 if self.table_exists(table_name):
                     print(f"Tabela {table_name} już istnieje. Pomijanie importu.")
                     return False
                 
-                # Utwórz tabelę z dodaną kolumną vdop
+                # Utwórz tabelę
                 cursor.execute(sql.SQL("""
                     CREATE TABLE IF NOT EXISTS {} (
                         id SERIAL PRIMARY KEY,
@@ -77,22 +80,32 @@ class DatabaseConnection:
                     )
                 """).format(sql.Identifier(table_name)))
                 
-                # Wstaw dane z uwzględnieniem vdop
+                # Licznik wierszy dla debugowania
+                row_count = 0
+                
+                # Wstaw dane
                 for row in csv_reader:
-                    time_str, lat, lon, alt, vdop = row
-                    
-                    # Konwersja formatu czasu jeśli potrzebna
-                    if ':' in time_str and len(time_str.split(':')) == 3:
-                        if ' ' not in time_str:
-                            time_str = f"{datetime.now().date()} {time_str}"
-                    
-                    cursor.execute(
-                        sql.SQL("""
-                            INSERT INTO {} (measurement_time, location, altitude, vdop)
-                            VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s)
-                        """).format(sql.Identifier(table_name)),
-                        (time_str, float(lon), float(lat), float(alt), float(vdop))
-                    )
+                    try:
+                        # Parsuj dane używając nazw kolumn z pliku CSV
+                        measurement_time = row['time']
+                        lat = float(row['latitude'])
+                        lon = float(row['longitude'])
+                        alt = float(row['altitude'])
+                        vdop = float(row['VDOP'])
+                        
+                        cursor.execute(
+                            sql.SQL("""
+                                INSERT INTO {} (measurement_time, location, altitude, vdop)
+                                VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s)
+                            """).format(sql.Identifier(table_name)),
+                            (measurement_time, lon, lat, alt, vdop)
+                        )
+                        row_count += 1
+                        
+                    except ValueError as e:
+                        print(f"Błąd konwersji danych w wierszu: {row}")
+                        print(f"Szczegóły błędu: {str(e)}")
+                        continue
                 
                 # Utwórz indeks przestrzenny
                 cursor.execute(sql.SQL("""
@@ -101,7 +114,7 @@ class DatabaseConnection:
                 """).format(
                     sql.Identifier(f"idx_{table_name}_location"), 
                     sql.Identifier(table_name)
-                ))  
+                ))
                 
                 # Dodaj wpis do tabeli measurement_sessions
                 cursor.execute(sql.SQL("""
@@ -112,16 +125,17 @@ class DatabaseConnection:
                 (file_name, file_name.split('_')[0]))
                 
                 conn.commit()
-                print(f"Dane zostały pomyślnie zaimportowane do tabeli {table_name}")
+                print(f"Pomyślnie zaimportowano {row_count} wierszy do tabeli {table_name}")
                 return True
             
         except Exception as e:
             conn.rollback()
-            print(f"Wystąpił błąd podczas importu danych: {str(e)}")
+            print(f"Wystąpił błąd podczas importu danych:")
+            print(f"Typ błędu: {type(e).__name__}")
+            print(f"Szczegóły błędu: {str(e)}")
             return None
         finally:
             cursor.close()
-            # Nie zamykamy połączenia, ponieważ jest zarządzane przez klasę
     
     def import_all_csv_files(self, directory='measurements'):
         success_count = 0
