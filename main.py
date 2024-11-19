@@ -318,11 +318,11 @@ def main(stdscr):
         sys.exit(1)
 
     if check_db_connection(db):
-            ui_data['db_connection'] = "Połączono"
-            print("Połączono z bazą danych")
+        ui_data['db_connection'] = "Połączono"
+        print("Polaczono z baza danych")
     else:
-        ui_data['db_connection'] = "Brak połączenia" 
-        print("Nie można połączyć się z bazą danych")
+        ui_data['db_connection'] = "Brak połączenia"
+        print("Brak polaczenia z baza danych")
 
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
@@ -369,7 +369,7 @@ def main(stdscr):
     # Inicjalizacja CSV
     display.clear()
     csv_file, file_name = init_csv()
-    mesurements = 0 #liczba zapisanych pomiarów
+    mesurements = 0 #zmienna przechowująca liczbe zapisanych pomiarów
     data_queue = Queue()
 
     # Uruchamianie wątków
@@ -496,7 +496,9 @@ def main(stdscr):
                 db.close()
                 sys.exit(0)
             if pause_mesure.state is not save_flag:
+                print(f"Trwa zapisywanie wszystkich pomiarów do bazy danych")
                 db.import_all_csv_files()
+                start_mesure.state = True
             time.sleep(button_push_loop)
 
 def main_service():
@@ -543,11 +545,11 @@ def main_service():
 
     if check_db_connection(db):
         ui_data['db_connection'] = "Połączono"
-        print("Połączono z bazą danych")
+        display.display_message("Polaczono z BD", 14)
     else:
-        ui_data['db_connection'] = "Brak połączenia" 
-        print("Nie można połączyć się z bazą danych")
-
+        ui_data['db_connection'] = "Brak połączenia"
+        display.display_message("Brak polaczenia\nz BD", 14)
+        
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
@@ -590,7 +592,7 @@ def main_service():
     # Inicjalizacja CSV
     display.clear()
     csv_file, file_name = init_csv()
-    mesurements = 0 #liczba zapisanych pomiarów
+    mesurements = 0 #zmienna przechowująca liczbe zapisanych pomiarów
     data_queue = Queue()
 
     # Uruchamianie wątków
@@ -685,7 +687,9 @@ def main_service():
                 db.close()
                 sys.exit(0)
             if pause_mesure.state is not save_flag:
+                display.display_message(f"Zapisywanie\nwszystkich pomiarów\ndo bazy danych", 13)
                 db.import_all_csv_files()
+                start_mesure.state = True
             time.sleep(button_push_loop)
 
 
