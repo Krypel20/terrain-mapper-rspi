@@ -495,16 +495,21 @@ def main(stdscr):
             start_mesure.handle_button()
             pause_mesure.handle_button()
             stop_mesure.handle_button()
+            
             if stop_mesure.state is not stop_flag:
-                # Zamknij połączenie z bazą danych
                 db.close()
                 sys.exit(0)
+            
             if pause_mesure.state is not save_flag:
                 print(f"Trwa zapisywanie wszystkich pomiarów do bazy danych")
                 db.import_all_csv_files()
-                break
+                save_flag = pause_mesure.state
+                print(f"Pomiar zapisany wcisnij start by kontynułować")
+                continue
+            
             if start_flag is not start_mesure.state:
                 break
+                
             time.sleep(button_push_loop)
 
 def main_service():
@@ -691,16 +696,21 @@ def main_service():
             start_mesure.handle_button()
             pause_mesure.handle_button()
             stop_mesure.handle_button()
+            
             if stop_mesure.state is not stop_flag:
-                # Zamknij połączenie z bazą danych
                 db.close()
                 sys.exit(0)
+            
             if pause_mesure.state is not save_flag:
                 display.display_message(f"Zapisywanie\nwszystkich pomiarów\ndo bazy danych", 13)
                 db.import_all_csv_files()
-                break
+                save_flag = pause_mesure.state
+                display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+                continue
+            
             if start_flag is not start_mesure.state:
                 break
+                
             time.sleep(button_push_loop)
 
 
