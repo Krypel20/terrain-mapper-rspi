@@ -467,30 +467,34 @@ def main(stdscr):
             if check_db_connection(db):
                 try:
                     db.upload_csv_to_db(csv_file)
-                    print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
+                    print(f"\n\nDane z pliku {file_name} zostały zaimportowane do bazy danych.")
                     display.display_message(f"Pomiar pomyslnie\n zapisany do\nbazy danych :)", 12)
                 except Exception as e:
                     print(f"Błąd podczas importu danych do bazy: {str(e)}")
             else:
-                print("Brak połączenia z bazą danych. Import nie został wykonany.")
+                print("\n\nBrak połączenia z bazą danych. Import nie został wykonany.")
                 display.display_message(f"Nie udalo sie\n zapisac pomiaru\n do bazy danych", 11)
                 
             time.sleep(2)
         else:
             start_mesure.state = False
-            display.display_message(f"\nProgram zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
-            print("\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
+            display.display_message(f"Program zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
+            print("\n\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
             time.sleep(1.25)
 
+        stdscr.touchwin()
         stdscr.refresh()
-        #stdscr.getch()  # Czekaj na naciśnięcie klawisza
+        stdscr.getch()
         print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
         display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
         
         stop_flag = stop_mesure.state
         save_flag = pause_mesure.state
-        while not start_mesure.state:
+        start_flag = start_mesure.state
+        while True:
             start_mesure.handle_button()
+            pause_mesure.handle_button()
+            stop_mesure.handle_button()
             if stop_mesure.state is not stop_flag:
                 # Zamknij połączenie z bazą danych
                 db.close()
@@ -498,7 +502,9 @@ def main(stdscr):
             if pause_mesure.state is not save_flag:
                 print(f"Trwa zapisywanie wszystkich pomiarów do bazy danych")
                 db.import_all_csv_files()
-                start_mesure.state = True
+                break
+            if start_flag is not start_mesure.state:
+                break
             time.sleep(button_push_loop)
 
 def main_service():
@@ -680,8 +686,11 @@ def main_service():
         
         stop_flag = stop_mesure.state
         save_flag = pause_mesure.state
-        while not start_mesure.state:
+        start_flag = start_mesure.state
+        while True:
             start_mesure.handle_button()
+            pause_mesure.handle_button()
+            stop_mesure.handle_button()
             if stop_mesure.state is not stop_flag:
                 # Zamknij połączenie z bazą danych
                 db.close()
@@ -689,7 +698,9 @@ def main_service():
             if pause_mesure.state is not save_flag:
                 display.display_message(f"Zapisywanie\nwszystkich pomiarów\ndo bazy danych", 13)
                 db.import_all_csv_files()
-                start_mesure.state = True
+                break
+            if start_flag is not start_mesure.state:
+                break
             time.sleep(button_push_loop)
 
 
