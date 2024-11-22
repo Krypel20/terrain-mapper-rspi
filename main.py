@@ -204,7 +204,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             # Obliczanie opóźnienia pomiędzy pomiarami
             if last_measurement_time is not None:
                 delay = (current_time - last_measurement_time).total_seconds()
-                ui_data['delay'] = round(2,delay)
+                ui_data['delay'] = round(delay,2)
             else:
                 ui_data['delay'] = None
             last_measurement_time = current_time
@@ -623,12 +623,9 @@ def main_service():
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
     
-    threads = [gps_thread, mpu_thread, csv_thread]
-    if not NO_OLED:
-        threads.append(oled_thread)
-
-    for thread in threads:
-        thread.start()
+    gps_thread.start()
+    mpu_thread.start()
+    csv_thread.start()
     
     start_time = datetime.now()
     if NO_OLED:
@@ -660,16 +657,16 @@ def main_service():
                 else:
                     ui_data['db_connection'] = "Brak połączenia"
             
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        logging.error(f"Wystapil problem podczas glownej petli: {e}")
     
     finally:
-        display.display_message(f"Pomiar zostal\nzakonczony!!!", 15)
+        if not NO_OLED:
+            oled_thread.join()
         stop_event.set()
-        time.sleep(0.5)
-        for thread in threads:
-            thread.join()
-        time.sleep(0.5)
+        mpu_thread.join()
+        gps_thread.join()
+        csv_thread.join()
         
         display.clear()
         
