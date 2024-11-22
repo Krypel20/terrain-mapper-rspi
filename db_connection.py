@@ -10,8 +10,8 @@ class DatabaseConnection:
             dbname='terrain_measurements', 
             user='pkrypel', 
             password='20122002', 
-            host='192.168.43.183', #192.168.20.13 // 192.168.43.183
-            port=5434 #5433 // 5434
+            host='192.168.20.13', #192.168.20.13 // 192.168.43.183
+            port=5433 #5433 // 5434
         ):
         self.dbname = dbname
         self.user = user

@@ -88,7 +88,7 @@ class Display:
             #'move_status': (72, 0),
             'csv_status': (2, 14), 
             #'measurements': (90, 14),
-            'duration': (2, 26), 'speed': (20, 26),
+            'duration': (2, 26), 'speed': (70, 26),
             'hdop': (2, 38),'sat': (60, 38),
         }
 
@@ -133,8 +133,8 @@ class Display:
 
         updated = False
 
-        updated |= self.update_field('duration', f"{ui_data['duration']}")
-        updated |= self.update_field('speed', f"Speed: {ui_data['speed']} {ui_data['headed']}" if ui_data['speed'] is not None else "Speed: N/A")
+        updated |= self.update_field('duration', f"{ui_data['duration']}, {ui_data['delay']}" if ui_data['duration'] is not None else "Czas: N/A")
+        updated |= self.update_field('speed', f"{ui_data['speed']}" if ui_data['speed'] is not None else "Speed N/A")
         updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
         updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
         updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} VDOP: {ui_data['vdop']}" if ui_data['vdop'] is not None else "HDOP: N/A VDOP: N/A")
@@ -204,7 +204,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             # Obliczanie opóźnienia pomiędzy pomiarami
             if last_measurement_time is not None:
                 delay = (current_time - last_measurement_time).total_seconds()
-                ui_data['delay'] = delay
+                ui_data['delay'] = round(2,delay)
             else:
                 ui_data['delay'] = None
             last_measurement_time = current_time
@@ -584,7 +584,6 @@ def main_service():
     pause_mesure = Button(13, 0.3, False) #yellow
     start_mesure = Button(6, 0.3, False)  #green
     
-    print("Oczekiwanie na naciśnięcie przycisku start")
     display.display_message("Wcisnij przycisk\nstart", 15)
     
     stop_flag = stop_mesure.state
@@ -661,10 +660,9 @@ def main_service():
                 else:
                     ui_data['db_connection'] = "Brak połączenia"
             
-            time.sleep(terminal_ui_sleep)
-            
     except KeyboardInterrupt:
         pass
+    
     finally:
         display.display_message(f"Pomiar zostal\nzakonczony!!!", 15)
         stop_event.set()
