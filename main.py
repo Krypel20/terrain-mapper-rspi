@@ -92,9 +92,9 @@ class Display:
             'hdop': (2, 38),'sat': (60, 38),
             
             #alternative display
-            'duration2': (1, 0), 'csv_status': (28, 0), 
-            'alt2': (1, 14),
-            'hdop2': (1, 42),
+            # 'duration2': (1, 0), 'csv_status': (28, 0), 
+            # 'alt2': (1, 14),
+            # 'hdop2': (1, 42),
         }
 
     def clear(self):
@@ -156,7 +156,7 @@ class Display:
         updated = False
 
         updated |= self.update_field('duration2', f"{ui_data['duration']}" if ui_data['duration'] is not None else "Czas: N/A")
-        updated |= self.update_field('csv_status', f"{ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
+        updated |= self.update_field('csv_status2', f"{ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
         updated |= self.update_field('alt2', f"Wys: {ui_data['alt']:.2f}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
         updated |= self.update_field('hdop2', f"HDOP: {ui_data['hdop']}" if ui_data['vdop'] is not None else "HDOP: N/A")
 
