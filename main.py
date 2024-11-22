@@ -153,8 +153,13 @@ def thread_exception_handler(args):
 # Funkcja do aktualizacji wyświetlacza OLED
 def oled_update_thread(display, stop_event, ui_data):
     while not stop_event.is_set():
-        display.display_data(ui_data)
-        time.sleep(oled_sleep)  # Aktualizacja co 100 ms max
+        try:
+            display.display_data(ui_data)
+        except:
+            pass
+        if stop_event.is_set():
+            break
+        time.sleep(oled_sleep) #aktualziacja max co 1s
 
 # Funkcja do odczytu danych z MPU6050 (akcelerometr + żyroskop)
 def read_mpu6050(mpu):
@@ -343,8 +348,10 @@ def main(stdscr):
     
     print("Oczekiwanie na naciśnięcie przycisku start")
     display.display_message("Wcisnij przycisk\nstart", 15)
+    
     stop_flag = stop_mesure.state
     pause_flag = pause_mesure.state
+    
     while not start_mesure.state:
         start_mesure.handle_button()
         if stop_mesure.state is not stop_flag:
@@ -379,6 +386,7 @@ def main(stdscr):
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
+    
     gps_thread.start()
     mpu_thread.start()
     csv_thread.start()
@@ -388,6 +396,7 @@ def main(stdscr):
         display.display_message("************\nTRWA POMIAR\n_________________", 17)
     stop_mesure.state = False
     pause_mesure.state = False
+    
     try:
         while not stop_event.is_set():
             stdscr.clear()
@@ -484,7 +493,6 @@ def main(stdscr):
 
         stdscr.touchwin()
         stdscr.refresh()
-        stdscr.getch()
         print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
         display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
         
@@ -578,8 +586,10 @@ def main_service():
     
     print("Oczekiwanie na naciśnięcie przycisku start")
     display.display_message("Wcisnij przycisk\nstart", 15)
+    
     stop_flag = stop_mesure.state
     pause_flag = pause_mesure.state
+    
     while not start_mesure.state:
         start_mesure.handle_button()
         if stop_mesure.state is not stop_flag:
@@ -628,9 +638,12 @@ def main_service():
     pause_mesure.state = False
     
     try:
-        while not stop_event.is_set():
+        while True:
             stop_mesure.handle_button()
             pause_mesure.handle_button()
+            
+            if stop_event.is_set():
+                break
             
             elapsed_time = datetime.now() - start_time
             ui_data['duration'] = str(elapsed_time).split('.')[0]
@@ -653,46 +666,50 @@ def main_service():
     except KeyboardInterrupt:
         pass
     finally:
+        display.display_message(f"Pomiar zostal\nzakonczony!!!", 15)
         stop_event.set()
+        time.sleep(0.5)
         for thread in threads:
             thread.join()
-
+        time.sleep(0.5)
+        
         display.clear()
+        
         if stop_mesure.state:
-            start_mesure.state = False
+            stop_mesure.state = False
             if not NO_OLED:
                 display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
+                time.sleep(1)
             else:
                 display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
-            print("\nProgram zakończony pomyślnie.")
-            time.sleep(1)
+                time.sleep(1)
             
-            # Próba importu danych do bazy po zakończeniu pomiaru
+            # Sprawdzenie połączenia przed próbą zapisu
             if check_db_connection(db):
+                display.display_message(f"Trwa zapis {ui_data['mesurements']} do\nbazy danych...", 13)
                 try:
                     db.upload_csv_to_db(csv_file)
-                    print(f"Dane z pliku {file_name} zostały zaimportowane do bazy danych.")
                     display.display_message(f"Pomiar pomyslnie\n zapisany do\nbazy danych :)", 12)
                 except Exception as e:
                     print(f"Błąd podczas importu danych do bazy: {str(e)}")
+                    display.display_message("Błąd zapisu\ndo bazy danych", 13)
             else:
-                print("Brak połączenia z bazą danych. Import nie został wykonany.")
-                display.display_message(f"Nie udalo sie\n zapisac pomiaru\n do bazy danych", 11)
-                
+                display.display_message(f"\nBrak polaczenia\nz baza danych\n :(", 12)
+
             time.sleep(2)
         else:
             start_mesure.state = False
             display.display_message(f"\nProgram zatrzymany :(\nWystąpił błąd\nsprawdź error_logs.txt", 12)
-            print("\nProgram zatrzymany :(\nSprawdź plik error_log.txt\naby zobaczyć szczegóły błędu.")
-            time.sleep(1.25)
+            time.sleep(2)
 
-        print(f"Zapisano do {file_name} Wciśnij przycisk start, aby rozpocząć nowy pomiar")
-        display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+        display.display_message(f"Pomiar zapisany\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar", 11)
         
         stop_flag = stop_mesure.state
         save_flag = pause_mesure.state
         start_flag = start_mesure.state
-        while True:
+        
+        waiting_for_input = True
+        while waiting_for_input:
             start_mesure.handle_button()
             pause_mesure.handle_button()
             stop_mesure.handle_button()
@@ -706,16 +723,18 @@ def main_service():
                 db.import_all_csv_files()
                 save_flag = pause_mesure.state
                 display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
+                time.sleep(1)
                 continue
             
-            if start_flag is not start_mesure.state:
+            if start_mesure.state is not start_flag:
+                waiting_for_input = False  # Zakończ pętlę oczekiwania
                 break
                 
             time.sleep(button_push_loop)
 
 
 if __name__ == "__main__":
-    # Sprawdź czy skrypt jest uruchomiony jako usługa
+    # Sprawdzenie czy skrypt jest uruchomiony jako usługa
     if os.environ.get('INVOKED_BY_SYSTEMD') == 'yes':
         while True:
             try:
@@ -724,5 +743,5 @@ if __name__ == "__main__":
                 logging.error(f"Error in main service: {str(e)}")
     else:
         while True:
-            # Uruchom w trybie interaktywnym z curses
+            # Uruchomienie w trybie terminala
             curses.wrapper(main)
