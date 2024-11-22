@@ -88,8 +88,13 @@ class Display:
             #'move_status': (72, 0),
             'csv_status': (2, 14), 
             #'measurements': (90, 14),
-            'duration': (2, 26), 'speed': (70, 26),
+            'duration': (2, 26), 'speed': (78, 26),
             'hdop': (2, 38),'sat': (60, 38),
+            
+            #alternative display
+            'duration2': (1, 0), 'csv_status': (28, 0), 
+            'alt2': (1, 14),
+            'hdop2': (1, 42),
         }
 
     def clear(self):
@@ -133,11 +138,27 @@ class Display:
 
         updated = False
 
-        updated |= self.update_field('duration', f"{ui_data['duration']}, {ui_data['delay']}" if ui_data['duration'] is not None else "Czas: N/A")
-        updated |= self.update_field('speed', f"{ui_data['speed']}" if ui_data['speed'] is not None else "Speed N/A")
+        updated |= self.update_field('duration', f"{ui_data['duration']}, delay: {ui_data['delay']}" if ui_data['duration'] is not None else "Czas: N/A")
+        updated |= self.update_field('speed', f"{ui_data['speed']} km/h" if ui_data['speed'] is not None else "Speed N/A")
         updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
         updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
         updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} VDOP: {ui_data['vdop']}" if ui_data['vdop'] is not None else "HDOP: N/A VDOP: N/A")
+
+        if updated:
+            self.oled.ShowImage(self.oled.getbuffer(self.image))
+            self.last_update_time = current_time
+    
+    def display_alternative_data(self, ui_data):
+        current_time = time.time()
+        if current_time - self.last_update_time < 0.1:
+            return  # Skip update if interval has not passed
+
+        updated = False
+
+        updated |= self.update_field('duration2', f"{ui_data['duration']}" if ui_data['duration'] is not None else "Czas: N/A")
+        updated |= self.update_field('csv_status', f"{ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
+        updated |= self.update_field('alt2', f"Wys: {ui_data['alt']:.2f}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
+        updated |= self.update_field('hdop2', f"HDOP: {ui_data['hdop']}" if ui_data['vdop'] is not None else "HDOP: N/A")
 
         if updated:
             self.oled.ShowImage(self.oled.getbuffer(self.image))
@@ -281,7 +302,7 @@ def check_queue_length(measurements_queue):
 
 def main(stdscr):
     global stop_event, db
-    NO_OLED = False
+    alternative_display = False
 
     # Współdzielona pamięć do przechowywania danych dla UI terminala
     ui_data = {
@@ -360,7 +381,7 @@ def main(stdscr):
         
         #opcja uruchomienia programu bez odświerzania wyświetlacza OLED
         if pause_mesure.state is not pause_flag:
-            NO_OLED = True
+            alternative_display = True
             display.display_message("Pomiar bez podglądu\nOLED OFF\nWcisnij start", 13)
             while not start_mesure.state:
                 start_mesure.handle_button()
@@ -380,7 +401,7 @@ def main(stdscr):
     data_queue = Queue()
 
     # Uruchamianie wątków
-    if not NO_OLED:
+    if not alternative_display:
         oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
         oled_thread.start()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
@@ -392,7 +413,7 @@ def main(stdscr):
     csv_thread.start()
     
     start_time = datetime.now()
-    if NO_OLED:
+    if alternative_display:
         display.display_message("************\nTRWA POMIAR\n_________________", 17)
     stop_mesure.state = False
     pause_mesure.state = False
@@ -453,7 +474,7 @@ def main(stdscr):
     except KeyboardInterrupt:
             pass
     finally:
-        if not NO_OLED:
+        if not alternative_display:
             oled_thread.join()
         stop_event.set()
         mpu_thread.join()
@@ -465,7 +486,7 @@ def main(stdscr):
         display.clear()
         if stop_mesure.state:
             start_mesure.state = False
-            if not NO_OLED:
+            if not alternative_display:
                 display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
             else:
                 display.display_message(f"Pomiar zakończony\n Wykonane pomiary {ui_data['mesurements']}", 12)
@@ -522,7 +543,7 @@ def main(stdscr):
 
 def main_service():
     global stop_event, db
-    NO_OLED = False
+    alternative_display = False
 
     # Współdzielona pamięć do przechowywania danych dla UI
     ui_data = {
@@ -596,7 +617,7 @@ def main_service():
             sys.exit(0)
         
         if pause_mesure.state is not pause_flag:
-            NO_OLED = True
+            alternative_display = True
             display.display_message("Pomiar bez podglądu\nOLED OFF\nWcisnij start", 13)
             while not start_mesure.state:
                 start_mesure.handle_button()
@@ -616,7 +637,7 @@ def main_service():
     data_queue = Queue()
 
     # Uruchamianie wątków
-    if not NO_OLED:
+    if not alternative_display:
         oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
         oled_thread.start()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
@@ -628,7 +649,7 @@ def main_service():
     csv_thread.start()
     
     start_time = datetime.now()
-    if NO_OLED:
+    if alternative_display:
         display.display_message("************\nTRWA POMIAR\n_________________", 17)
     stop_mesure.state = False
     pause_mesure.state = False
@@ -661,7 +682,7 @@ def main_service():
         logging.error(f"Wystapil problem podczas glownej petli: {e}")
     
     finally:
-        if not NO_OLED:
+        if not alternative_display:
             oled_thread.join()
         stop_event.set()
         mpu_thread.join()
@@ -672,7 +693,7 @@ def main_service():
         
         if stop_mesure.state:
             stop_mesure.state = False
-            if not NO_OLED:
+            if not alternative_display:
                 display.display_message(f"Pomiar zakończony\npomyślnie :)", 15)
                 time.sleep(1)
             else:
@@ -717,8 +738,8 @@ def main_service():
                 display.display_message(f"Zapisywanie\nwszystkich pomiarów\ndo bazy danych", 13)
                 db.import_all_csv_files()
                 save_flag = pause_mesure.state
-                display.display_message(f"Pomiar zapisany do\n\n{file_name}\n Wcisnij start aby\nzaczac nowy pomiar")
-                time.sleep(1)
+                display.display_message(f"Wszystkie pomiary\nzostaly pomyslnie zapisane\ndo bazy danych", 12)
+                time.sleep(1.5)
                 continue
             
             if start_mesure.state is not start_flag:
