@@ -76,7 +76,8 @@ class DatabaseConnection:
                         measurement_time TIMESTAMP WITHOUT TIME ZONE,
                         location GEOGRAPHY(POINT, 4326),
                         altitude NUMERIC(10, 2),
-                        vdop NUMERIC(10, 2)
+                        vdop NUMERIC(10, 2),
+                        baro_alt NUMERIC(10, 2)
                     )
                 """).format(sql.Identifier(table_name)))
                 
@@ -92,13 +93,14 @@ class DatabaseConnection:
                         lon = float(row['longitude'])
                         alt = float(row['altitude'])
                         vdop = float(row['VDOP'])
+                        baro_alt = float(row['baro_alt'])
                         
                         cursor.execute(
                             sql.SQL("""
-                                INSERT INTO {} (measurement_time, location, altitude, vdop)
-                                VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s)
+                                INSERT INTO {} (measurement_time, location, altitude, vdop, baro_alt)
+                                VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s)
                             """).format(sql.Identifier(table_name)),
-                            (measurement_time, lon, lat, alt, vdop)
+                            (measurement_time, lon, lat, alt, vdop, baro_alt)
                         )
                         row_count += 1
                         

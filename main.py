@@ -10,6 +10,7 @@ import traceback
 import logging
 import RPi.GPIO as GPIO
 import psycopg2
+from BMP3XX import *
 from psycopg2 import OperationalError
 from db_connection import DatabaseConnection
 from config import config
@@ -20,6 +21,7 @@ from PIL import Image,ImageDraw,ImageFont
 from queue import Queue, Empty
 
 mpu6050_sleep = 0.2
+bmp390_sleep = 0.2
 l76k_sleep = 0.2
 oled_sleep = 1
 terminal_ui_sleep = 0.1
@@ -88,7 +90,7 @@ class Display:
             #'move_status': (72, 0),
             'csv_status': (2, 14), 
             #'measurements': (90, 14),
-            'duration': (2, 26), 'speed': (78, 26),
+            'duration': (2, 26), 'speed': (72, 26),
             'hdop': (2, 38),'sat': (60, 38),
             
             #alternative display
@@ -138,8 +140,8 @@ class Display:
 
         updated = False
 
-        updated |= self.update_field('duration', f"{ui_data['duration']}, delay: {ui_data['delay']}" if ui_data['duration'] is not None else "Czas: N/A")
-        updated |= self.update_field('speed', f"{ui_data['speed']} km/h" if ui_data['speed'] is not None else "Speed N/A")
+        updated |= self.update_field('duration', f"{ui_data['duration']}, d:{ui_data['delay']}s" if ui_data['duration'] is not None else "Czas: N/A")
+        updated |= self.update_field('speed', f"{ui_data['speed']}km/h" if ui_data['speed'] is not None else "Speed N/A")
         updated |= self.update_field('csv_status', f"Zapis: {ui_data['csv_status']} - [{ui_data['mesurements']}]" if ui_data['mesurements'] is not None else f"Zapis: {ui_data['csv_status']} - [brak]")
         updated |= self.update_field('alt', f"Wys: {ui_data['alt']:.2f} - {ui_data['move_status']}" if ui_data['alt'] is not None else f"NO SIGNAL - {ui_data['move_status']}")
         updated |= self.update_field('hdop', f"HDOP: {ui_data['hdop']} VDOP: {ui_data['vdop']}" if ui_data['vdop'] is not None else "HDOP: N/A VDOP: N/A")
@@ -187,6 +189,66 @@ def read_mpu6050(mpu):
     accel = mpu.get_accel_data()  # Odczyt akcelerometru
     gyro = mpu.get_gyro_data()    # Odczyt żyroskopu
     return accel, gyro
+
+def bmp390_thread(bmp, stop_event, ui_data, movement_detected):
+    """
+    Wątek obsługujący czujnik BMP390 do pomiaru ciśnienia i temperatury.
+    
+    Args:
+        bmp: Obiekt czujnika BMP390
+        stop_event: Event do sygnalizacji zatrzymania wątku
+        ui_data: Słownik współdzielonych danych UI
+        movement_detected: Lista z flagą wykrycia ruchu
+    """
+    # Stała do kalibracji wysokości (można dostosować)
+    ALTITUDE_DIFF_THRESHOLD = 5.0  # metry
+    
+    # Inicjalizacja średniej ruchomej dla stabilizacji odczytów
+    pressure_readings = []
+    MAX_READINGS = 5
+    
+    while not stop_event.is_set():
+        try:
+            # Pomiar ciśnienia, temperatury i obliczenie wysokości
+            pressure = bmp.get_pressure
+            temperature = bmp.get_temperature
+            altitude = bmp.get_altitude
+            
+            # Dodaj odczyt ciśnienia do listy dla średniej ruchomej
+            pressure_readings.append(pressure)
+            if len(pressure_readings) > MAX_READINGS:
+                pressure_readings.pop(0)
+            
+            # Oblicz średnią z ostatnich odczytów
+            avg_pressure = sum(pressure_readings) / len(pressure_readings)
+            
+            # Aktualizacja danych w słowniku UI
+            ui_data['baro_pressure'] = round(avg_pressure, 2)
+            ui_data['baro_temp'] = round(temperature, 2)
+            ui_data['baro_alt'] = round(altitude, 2)
+            
+            # Porównanie z wysokością GNSS (jeśli dostępna)
+            if ui_data.get('alt') is not None:
+                alt_diff = abs(ui_data['alt'] - altitude)
+                
+                # Sprawdzenie czy różnica wysokości przekracza próg
+                if alt_diff > ALTITUDE_DIFF_THRESHOLD and movement_detected[0]:
+                    ui_data['alt_warning'] = True
+                    ui_data['alt_diff'] = round(alt_diff, 2)
+                else:
+                    ui_data['alt_warning'] = False
+                    ui_data['alt_diff'] = 0.0
+            
+            # Zapisz poprzednią wysokość do wykrywania zmian
+            ui_data['prev_baro_alt'] = altitude
+            
+        except Exception as e:
+            logging.error(f"Błąd w wątku BMP390: {str(e)}")
+            ui_data['baro_error'] = "error"
+            time.sleep(1)
+            continue
+            
+        time.sleep(bmp390_sleep)
 
 # Wątek do odczytu z MPU6050 
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected):
@@ -239,7 +301,6 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
             ui_data['hdop'] = l76k.HDOP
             ui_data['vdop'] = l76k.VDOP
             ui_data['pdop'] = l76k.PDOP
-            ui_data['gnss_system'] = l76k.GNSS_system
             ui_data['speed'] = l76k.speed
             ui_data['headed'] = l76k.direction
             
@@ -249,11 +310,11 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                 if l76k.Altitude:
                     mesurements += 1
                     ui_data['mesurements'] = mesurements
-                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude, l76k.HDOP]) #powinien byc VDOP ale czujnik go nie zwraca poprawnie
+                    data_queue.put([str(mesure_timestamp), round(l76k.Lat, 6), round(l76k.Lon, 6), l76k.Altitude, l76k.HDOP, ui_data['baro_alt']]) #powinien byc VDOP ale czujnik go nie zwraca poprawnie
             else:
                 ui_data['csv_status'] = "Zatrzymany"
         
-        time.sleep(l76k_sleep)  # Próbkowanie GPS co 500 ms
+        time.sleep(l76k_sleep)
 
 # Wątek do zapisywania bierzących pomiarów do pliku CSV
 def csv_writer_thread(csv_file, data_queue, stop_event):
@@ -281,7 +342,7 @@ def init_csv():
     # Tworzenie pliku z nagłówkiem
     with open(csv_file, 'w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["time", "latitude", "longitude", "altitude", "VDOP"])
+        writer.writerow(["time", "latitude", "longitude", "altitude", "VDOP","baro_alt"])
     
     return csv_file, file_name
 
@@ -300,36 +361,39 @@ def check_queue_length(measurements_queue):
     queue_length = measurements_queue.qsize()
     return queue_length
 
+# Współdzielona pamięć do przechowywania danych
+ui_data = {
+    'duration': None,
+    'time': None,
+    'lat': None,
+    'lon': None,
+    'alt': None,
+    'sat': None,
+    'accel': {'x': 0, 'y': 0, 'z': 0},
+    'gyro': {'x': 0, 'y': 0, 'z': 0},
+    'move': None,
+    'move_status': None,
+    'mesurements': None,
+    'hdop': None,
+    'vdop': None,
+    'pdop': None,
+    'quality_index': None,
+    'csv_status': None,
+    'queue_length': None,
+    'delay': None,
+    'db_connection': None,
+    'wifi_connection': None,
+    'speed': None,
+    'headed': None,
+    'baro_pressure': None,
+    'baro_temp': None,
+    'baro_alt': None,
+    'alt_diff': None,
+}
+
 def main(stdscr):
     global stop_event, db
     alternative_display = False
-
-    # Współdzielona pamięć do przechowywania danych dla UI terminala
-    ui_data = {
-        'duration': None,
-        'time': None,
-        'lat': None,
-        'lon': None,
-        'alt': None,
-        'sat': None,
-        'accel': {'x': 0, 'y': 0, 'z': 0},
-        'gyro': {'x': 0, 'y': 0, 'z': 0},
-        'move': None,
-        'move_status': None,
-        'mesurements': None,
-        'hdop': None,
-        'vdop': None,
-        'pdop': None,
-        'gnss_system': None,
-        'quality_index': None,
-        'csv_status': None,
-        'queue_length': None,
-        'delay': None,
-        'db_connection': None,
-        'wifi_connection': None,
-        'speed': None,
-        'headed': None
-    }
 
     curses.curs_set(0)
     display = Display()
@@ -353,7 +417,12 @@ def main(stdscr):
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
-    conf = config(baudrate=9600, mpu_address=0x68)
+    bmp = BMP3XX_I2C(i2c_addr = 0x77,bus = 3) #adres BMP390
+    if not bmp.begin():
+        logging.error("Nie można zainicjalizować BMP390")
+    else:
+        bmp.set_common_sampling_mode(HIGH_PRECISION)
+    mpu6050 = config(baudrate=9600, mpu_address=0x68) #adres MPU6050
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
     # print("L76K cold start")
@@ -404,19 +473,24 @@ def main(stdscr):
     if not alternative_display:
         oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
         oled_thread.start()
-    mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
+    mpu_thread = SafeThread(target=mpu6050_thread, args=(mpu6050.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
+    bmp_thread = SafeThread(target=bmp390_thread, args=(bmp, stop_event, ui_data, movement_detected))
     
     gps_thread.start()
     mpu_thread.start()
     csv_thread.start()
+    bmp_thread.start()
     
     start_time = datetime.now()
     if alternative_display:
         display.display_message("************\nTRWA POMIAR\n_________________", 17)
     stop_mesure.state = False
     pause_mesure.state = False
+    
+    stdscr.clear()
+    print("\nPomiar rozpoczęty")
     
     try:
         while not stop_event.is_set():
@@ -458,14 +532,15 @@ def main(stdscr):
                 pdop = f"{ui_data['pdop']}" if ui_data['pdop'] is not None else "N/A"
                 speed = f"{ui_data['speed']}" if ui_data['speed'] is not None else "N/A"
                 headed = f"{ui_data['headed']}" if ui_data['headed'] is not None else "N/A"
-                gnss_system = f"{ui_data['gnss_system']}" if ui_data['gnss_system'] is not None else "N/A"
                 stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Satellites: {sat}")
                 stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, Speed: {speed} Direction: {headed}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
                 stdscr.addstr(6, 0, "HDOP: N/A, VDOP: N/A, PDOP: N/A, GNSS: N/A")
-
-            stdscr.addstr(7, 0, f"Połączenie z bazą danych: {ui_data['db_connection']}")
+            
+            stdscr.addstr(7, 0, f"[BMP390] Cisnienie: {ui_data['baro_pressure']} hPa, Temp: {ui_data['baro_temp']} C")
+            stdscr.addstr(8, 0, f"Wysokosc: {ui_data['baro_alt']} m, Różnica wys.: {ui_data['alt_diff']} m")
+            stdscr.addstr(10, 0, f"Połączenie z bazą danych: {ui_data['db_connection']}")
 
             # Odświeżenie ekranu terminala
             stdscr.refresh()
@@ -545,33 +620,6 @@ def main_service():
     global stop_event, db
     alternative_display = False
 
-    # Współdzielona pamięć do przechowywania danych dla UI
-    ui_data = {
-        'duration': None,
-        'time': None,
-        'lat': None,
-        'lon': None,
-        'alt': None,
-        'sat': None,
-        'accel': {'x': 0, 'y': 0, 'z': 0},
-        'gyro': {'x': 0, 'y': 0, 'z': 0},
-        'move': None,
-        'move_status': None,
-        'mesurements': None,
-        'hdop': None,
-        'vdop': None,
-        'pdop': None,
-        'gnss_system': None,
-        'quality_index': None,
-        'csv_status': None,
-        'queue_length': None,
-        'delay': None,
-        'db_connection': None,
-        'wifi_connection': None,
-        'speed': None,
-        'headed': None
-    }
-
     display = Display()
     display.display_message("Terrain Mapper\nInicjalizacja...", 15)
 
@@ -593,7 +641,7 @@ def main_service():
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
-    conf = config(baudrate=9600, mpu_address=0x68)
+    mpu6050 = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
     
@@ -640,7 +688,7 @@ def main_service():
     if not alternative_display:
         oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
         oled_thread.start()
-    mpu_thread = SafeThread(target=mpu6050_thread, args=(conf.mpu, stop_event, ui_data, movement_detected))
+    mpu_thread = SafeThread(target=mpu6050_thread, args=(mpu6050.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
     
