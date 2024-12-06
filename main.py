@@ -422,6 +422,7 @@ def main(stdscr):
         logging.error("Nie można zainicjalizować BMP390")
     else:
         bmp.set_common_sampling_mode(HIGH_PRECISION)
+        
     mpu6050 = config(baudrate=9600, mpu_address=0x68) #adres MPU6050
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
@@ -555,7 +556,8 @@ def main(stdscr):
         mpu_thread.join()
         gps_thread.join()
         csv_thread.join()
-
+        bmp_thread.join()
+        
         # Wyświetl informację o błędzie, jeśli wystąpił
         stdscr.clear()
         display.clear()
@@ -641,6 +643,12 @@ def main_service():
     # Event do zatrzymywania wątków
     stop_event = threading.Event()
     
+    bmp = BMP3XX_I2C(i2c_addr = 0x77,bus = 3) #adres BMP390
+    if not bmp.begin():
+        logging.error("Nie można zainicjalizować BMP390")
+    else:
+        bmp.set_common_sampling_mode(HIGH_PRECISION)
+        
     mpu6050 = config(baudrate=9600, mpu_address=0x68)
     l76k=L76X.L76X()
     l76k.L76X_Send_Command(l76k.SET_COLD_START)
@@ -691,10 +699,12 @@ def main_service():
     mpu_thread = SafeThread(target=mpu6050_thread, args=(mpu6050.mpu, stop_event, ui_data, movement_detected))
     gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
+    bmp_thread = SafeThread(target=bmp390_thread, args=(bmp, stop_event, ui_data, movement_detected))
     
     gps_thread.start()
     mpu_thread.start()
     csv_thread.start()
+    bmp_thread.start()
     
     start_time = datetime.now()
     if alternative_display:
@@ -736,6 +746,7 @@ def main_service():
         mpu_thread.join()
         gps_thread.join()
         csv_thread.join()
+        bmp_thread.join()
         
         display.clear()
         
