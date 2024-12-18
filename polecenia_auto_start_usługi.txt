@@ -1,0 +1,26 @@
+# Sprawdzenie statusu usługi
+sudo systemctl status terrainmapper.service
+
+# Zatrzymanie usługi
+sudo systemctl stop terrainmapper.service
+
+# Uruchomienie usługi
+sudo systemctl start terrainmapper.service
+
+# Restart usługi
+sudo systemctl restart terrainmapper.service
+
+# Wyłączenie autostartu (usługa nie będzie uruchamiana przy starcie systemu)
+sudo systemctl disable terrainmapper.service
+
+# Włączenie autostartu (usługa będzie uruchamiana przy starcie systemu)
+sudo systemctl enable terrainmapper.service
+
+# Podgląd logów usługi w czasie rzeczywistym
+sudo journalctl -u terrainmapper.service -f
+
+# Podgląd ostatnich logów błędów
+tail -f /var/log/terrainmapper/error.log
+
+# Podgląd ostatnich logów wyjścia
+tail -f /var/log/terrainmapper/output.log
