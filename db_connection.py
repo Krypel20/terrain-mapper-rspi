@@ -5,6 +5,31 @@ import csv
 from datetime import datetime
 import os
 
+def archive_csv_file(csv_file_path):
+    """
+    Przenosi plik CSV do folderu archiwum po udanym przesłaniu do bazy.
+    
+    Args:
+        csv_file_path: Ścieżka do pliku CSV
+    """
+    try:
+        # Utwórz folder archive jeśli nie istnieje
+        archive_folder = os.path.join('measurements', 'archive')
+        os.makedirs(archive_folder, exist_ok=True)
+        
+        # Pobierz nazwę pliku
+        file_name = os.path.basename(csv_file_path)
+        archive_path = os.path.join(archive_folder, file_name)
+        
+        # Przenieś plik do archiwum
+        os.rename(csv_file_path, archive_path)
+        print(f"Plik {file_name} został przeniesiony do archiwum")
+        return True
+        
+    except Exception as e:
+        print(f"Błąd podczas przenoszenia pliku do archiwum: {str(e)}")
+        return False
+
 class DatabaseConnection:
     def __init__(self, 
             dbname='terrain_measurements', 
@@ -128,6 +153,12 @@ class DatabaseConnection:
                 
                 conn.commit()
                 print(f"Pomyślnie zaimportowano {row_count} wierszy do tabeli {table_name}")
+                # Po udanym imporcie przenieś plik do archiwum
+                if archive_csv_file(csv_file_path):
+                    print(f"Plik został zarchiwizowany")
+                else:
+                    print(f"Nie udało się zarchiwizować pliku")
+                    
                 return True
             
         except Exception as e:
@@ -144,16 +175,20 @@ class DatabaseConnection:
         skip_count = 0
         fail_count = 0
 
-        for filename in os.listdir(directory):
-            if filename.endswith('.csv'):
-                file_path = os.path.join(directory, filename)
-                result = self.upload_csv_to_db(file_path)
-                if result is True:
-                    success_count += 1
-                elif result is False:
-                    skip_count += 1
-                else:
-                    fail_count += 1
+        # Lista plików przed rozpoczęciem importu
+        files_to_process = [f for f in os.listdir(directory) 
+        if f.endswith('.csv') and os.path.isfile(os.path.join(directory, f))]
+
+        for filename in files_to_process:
+            file_path = os.path.join(directory, filename)
+            result = self.upload_csv_to_db(file_path)
+            
+            if result is True:
+                success_count += 1
+            elif result is False:
+                skip_count += 1
+            else:
+                fail_count += 1
 
         print(f"Podsumowanie importu:")
         print(f"- Pomyślnie zaimportowano: {success_count} plików")
