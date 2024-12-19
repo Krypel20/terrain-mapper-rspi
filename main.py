@@ -229,7 +229,7 @@ class SensorFusion:
         # Kompensacja przyspieszenia grawitacyjnego
         accel_z = accel_data['z'] - 9.81
         # Ogranicz maksymalną zmianę wysokości z pojedynczego pomiaru
-        max_height_change = 1  # 1m na pomiar
+        max_height_change = 0.5  # 1m na pomiar
         delta_height = accel_z * (self.dt * self.dt) / 2 # s = (a * t^2) / 2
         
         if abs(delta_height) < max_height_change:
@@ -247,13 +247,13 @@ class SensorFusion:
         current_alpha = self.calculate_adaptive_alpha(hdop)
         
         # Skoryguj wysokość GNSS o zakumulowaną zmianę z IMU
-        corrected_altitude = gnss_altitude + self.accumulated_height
+        corrected_altitude = gnss_altitude + self.accumulated_altitude_change
         
         # Fuzja danych
         fused_altitude = current_alpha * corrected_altitude + (1 - current_alpha) * gnss_altitude
         
         # Reset akumulatora po fuzji
-        self.accumulated_height = 0
+        self.accumulated_altitude_change = 0
         
         # Zapamiętaj ostatnią wysokość
         self.last_altitude = fused_altitude
