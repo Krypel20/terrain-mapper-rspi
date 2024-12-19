@@ -222,50 +222,43 @@ class SensorFusion:
         # Ogranicz do zdefiniowanego zakresu
         return max(min(adaptive_alpha, self.max_alpha), self.min_alpha)
     
+    def add_imu_data(self, accel_data, gyro_data):
+        """
+        Akumuluje dane z IMU między pomiarami GNSS
+        """
+        # Kompensacja przyspieszenia grawitacyjnego
+        accel_z = accel_data['z'] - 9.81
+        # Ogranicz maksymalną zmianę wysokości z pojedynczego pomiaru
+        max_height_change = 1  # 1m na pomiar
+        delta_height = accel_z * (self.dt * self.dt) / 2 # s = (a * t^2) / 2
+        
+        if abs(delta_height) < max_height_change:
+            self.accumulated_height += delta_height
+        
     def update(self, gnss_altitude, hdop=None):
         """
-        Aktualizacja estymowanej wysokości na podstawie danych z czujników.
-        
-        Args:
-            gnss_altitude: wysokość z GNSS
-            accel_data: dane z akcelerometru (dict z x,y,z)
-            gyro_data: dane z żyroskopu (dict z x,y,z)
-            hdop: wartość HDOP z odbiornika GNSS
-            
-        Returns:
-            tuple: (skorygowana wysokość, użyty współczynnik alfa)
+        Wykonuje fuzję danych przy każdym pomiarze GNSS (co 1s)
         """
         if self.last_altitude is None:
             self.last_altitude = gnss_altitude
             return gnss_altitude, self.base_alpha
-            
+        
         # Oblicz adaptacyjną alfę
         current_alpha = self.calculate_adaptive_alpha(hdop)
-
-        # Obliczenie zmiany wysokości z IMU jako prędkość * czas
-        imu_altitude = self.last_altitude + self.accumulated_altitude_change
         
-        # Fuzja danych z adaptacyjnym współczynnikiem
-        fused_altitude = current_alpha * imu_altitude + (1 - current_alpha) * gnss_altitude
+        # Skoryguj wysokość GNSS o zakumulowaną zmianę z IMU
+        corrected_altitude = gnss_altitude + self.accumulated_height
         
-        # Reset po fuzji
-        self.accumulated_altitude_change = 0
+        # Fuzja danych
+        fused_altitude = current_alpha * corrected_altitude + (1 - current_alpha) * gnss_altitude
+        
+        # Reset akumulatora po fuzji
+        self.accumulated_height = 0
+        
+        # Zapamiętaj ostatnią wysokość
         self.last_altitude = fused_altitude
         
         return fused_altitude, current_alpha
-    
-    def add_imu_data(self, accel_data, gyro_data):
-        # Kompensacja przyspieszenia grawitacyjnego (9.81 m/s^2)
-        accel_z = accel_data['z'] - 9.81
-        
-        # Obliczenie prędkości pionowej metodą trapezów 
-        # (średnia z obecnego i poprzedniego przyspieszenia * dt)
-        self.velocity_z += (accel_z + self.last_accel_z) * self.dt / 2
-        
-        # Obliczenie zmiany wysokości jako prędkość * czas
-        altitude_change = self.velocity_z * self.dt
-        self.accumulated_altitude_change += altitude_change
-        self.last_accel_z = accel_z
     
 # Funkcja do obsługi wyjątków w wątkach
 def thread_exception_handler(args):
