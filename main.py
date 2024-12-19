@@ -233,7 +233,7 @@ class SensorFusion:
         delta_height = accel_z * (self.dt * self.dt) / 2 # s = (a * t^2) / 2
         
         if abs(delta_height) < max_height_change:
-            self.accumulated_height += delta_height
+            self.accumulated_altitude_change += delta_height
         
     def update(self, gnss_altitude, hdop=None):
         """
