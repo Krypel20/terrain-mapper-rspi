@@ -179,7 +179,7 @@ class SensorFusion:
         self.base_alpha = base_alpha
         self.min_alpha = min_alpha
         self.max_alpha = max_alpha
-        self.accumulated_altitude_change
+        self.accumulated_altitude_change = 0
         self.last_altitude = None
         self.velocity_z = 0
         self.last_accel_z = 0
