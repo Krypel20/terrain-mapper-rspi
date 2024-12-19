@@ -179,6 +179,7 @@ class SensorFusion:
         self.base_alpha = base_alpha
         self.min_alpha = min_alpha
         self.max_alpha = max_alpha
+        self.accumulated_altitude_change
         self.last_altitude = None
         self.velocity_z = 0
         self.last_accel_z = 0
@@ -221,7 +222,7 @@ class SensorFusion:
         # Ogranicz do zdefiniowanego zakresu
         return max(min(adaptive_alpha, self.max_alpha), self.min_alpha)
     
-    def update(self, gnss_altitude, accel_data, hdop=None):
+    def update(self, gnss_altitude, hdop=None):
         """
         Aktualizacja estymowanej wysokości na podstawie danych z czujników.
         
@@ -240,26 +241,31 @@ class SensorFusion:
             
         # Oblicz adaptacyjną alfę
         current_alpha = self.calculate_adaptive_alpha(hdop)
+
+        # Obliczenie zmiany wysokości z IMU jako prędkość * czas
+        imu_altitude = self.last_altitude + self.accumulated_altitude_change
         
-        # Kompensacja przyspieszenia grawitacyjnego
+        # Fuzja danych z adaptacyjnym współczynnikiem
+        fused_altitude = current_alpha * imu_altitude + (1 - current_alpha) * gnss_altitude
+        
+        # Reset po fuzji
+        self.accumulated_altitude_change = 0
+        self.last_altitude = fused_altitude
+        
+        return fused_altitude, current_alpha
+    
+    def add_imu_data(self, accel_data, gyro_data):
+        # Kompensacja przyspieszenia grawitacyjnego (9.81 m/s^2)
         accel_z = accel_data['z'] - 9.81
         
         # Obliczenie prędkości pionowej metodą trapezów 
         # (średnia z obecnego i poprzedniego przyspieszenia * dt)
         self.velocity_z += (accel_z + self.last_accel_z) * self.dt / 2
-        self.last_accel_z = accel_z
         
-        # Obliczenie zmiany wysokości z IMU jako prędkość * czas
+        # Obliczenie zmiany wysokości jako prędkość * czas
         altitude_change = self.velocity_z * self.dt
-        imu_altitude = self.last_altitude + altitude_change
-        
-        # Fuzja danych z adaptacyjnym współczynnikiem
-        fused_altitude = current_alpha * imu_altitude + (1 - current_alpha) * gnss_altitude
-        
-        # Aktualizacja ostatniej wysokości
-        self.last_altitude = fused_altitude
-        
-        return fused_altitude, current_alpha
+        self.accumulated_altitude_change += altitude_change
+        self.last_accel_z = accel_z
     
 # Funkcja do obsługi wyjątków w wątkach
 def thread_exception_handler(args):
@@ -349,77 +355,84 @@ def bmp390_thread(bmp, stop_event, ui_data, movement_detected):
 def mpu6050_thread(mpu, stop_event, ui_data, movement_detected, sensor_fusion):
     mv_threshold = 0 #13.5 Próg ruchu
     rt_threshold = 0 #100  Próg rotacji
-    while not stop_event.is_set():
-        accel, gyro = read_mpu6050(mpu)
-        movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
-        rotation = abs(gyro['x']) + abs(gyro['y']) + abs(gyro['z'])
-        ui_data['accel'] = accel
-        ui_data['gyro'] = gyro
+    try:
+        while not stop_event.is_set():
+            accel, gyro = read_mpu6050(mpu)
+            movement = abs(accel['x']) + abs(accel['y']) + abs(accel['z']) # Wektor przyspieszenia ruchu
+            rotation = abs(gyro['x']) + abs(gyro['y']) + abs(gyro['z'])
+            ui_data['accel'] = accel
+            ui_data['gyro'] = gyro
 
-        sensor_fusion.add_imu_data(accel, gyro) # Fuzja danych z IMU     
-        
-        # Sprawdzanie, czy urządzenie jest w ruchu
-        if movement > mv_threshold and rotation > rt_threshold:
-            movement_detected[0] = True  # Wykryto ruch
-            ui_data['move'] = f"W ruchu, movement {movement:.2f} | rotation {rotation:.2f}"
-            ui_data['move_status'] = "W ruchu"
-        else:
-            movement_detected[0] = False  # Brak ruchu
-            ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
-            ui_data['move_status'] = "W miejscu"
+            # Fuzja danych z L76K
+            sensor_fusion.add_imu_data(accel, gyro)    
+            
+            # Sprawdzanie, czy urządzenie jest w ruchu
+            if movement > mv_threshold and rotation > rt_threshold:
+                movement_detected[0] = True  # Wykryto ruch
+                ui_data['move'] = f"W ruchu, movement {movement:.2f} | rotation {rotation:.2f}"
+                ui_data['move_status'] = "W ruchu"
+            else:
+                movement_detected[0] = False  # Brak ruchu
+                ui_data['move'] = f"W miejscu, movement {movement:.2f} | rotation {rotation:.2f}"
+                ui_data['move_status'] = "W miejscu"
 
-        time.sleep(mpu6050_sleep)  # Próbkowanie MPU6050 co 150ms
+            time.sleep(mpu6050_sleep)  # Próbkowanie MPU6050 co 150ms
+    except Exception as e:
+        logging.error(f"Wystapil blad podczas wykonywania wątku mpu6050: {e}", exc_info=True)
+        stop_event.set()
 
 # Wątek do odczytu z L76K
 def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue, sensor_fusion):
     global mesurement_saveing
     last_measurement_time = None
-    
-    while not stop_event.is_set():
-        l76k.L76X_Gat_GNGGA()
-        if l76k.Status == 1:
-            current_time = datetime.now()
-            mesure_timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        while not stop_event.is_set():
+            l76k.L76X_Gat_GNGGA()
+            if l76k.Status == 1:
+                current_time = datetime.now()
+                mesure_timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Obliczanie opóźnienia pomiędzy pomiarami
+                if last_measurement_time is not None:
+                    delay = (current_time - last_measurement_time).total_seconds()
+                    ui_data['delay'] = round(delay,2)
+                else:
+                    ui_data['delay'] = None
+                last_measurement_time = current_time
+                
+                corrected_altitude, current_alpha = sensor_fusion.update(
+                    l76k.Altitude,
+                    l76k.HDOP
+                )
+                
+                # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
+                ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
+                ui_data['lat'] = l76k.Lat
+                ui_data['lon'] = l76k.Lon
+                ui_data['alt'] = l76k.Altitude
+                ui_data['new_alt'] = corrected_altitude
+                ui_data['sat'] = l76k.Satellites
+                ui_data['hdop'] = l76k.HDOP
+                ui_data['vdop'] = l76k.VDOP
+                ui_data['pdop'] = l76k.PDOP
+                ui_data['speed'] = l76k.speed
+                ui_data['headed'] = l76k.direction
+                ui_data['fusion_alpha'] = current_alpha
+                
+                # Zapis do CSV, tylko gdy wykryto ruch
+                if movement_detected[0] and not pause_mesure.state:
+                    ui_data['csv_status'] = "Aktywny"
+                    if l76k.Altitude:
+                        mesurements += 1
+                        ui_data['mesurements'] = mesurements
+                        data_queue.put([str(mesure_timestamp), round(ui_data['lat'], 6), round(ui_data['lon'], 6), ui_data['alt'], ui_data['hdop'], ui_data['baro_alt']]) #powinien byc VDOP ale odbiornik nie zwraca tej wartosci poprawnie
+                else:
+                    ui_data['csv_status'] = "Zatrzymany"
             
-            # Obliczanie opóźnienia pomiędzy pomiarami
-            if last_measurement_time is not None:
-                delay = (current_time - last_measurement_time).total_seconds()
-                ui_data['delay'] = round(delay,2)
-            else:
-                ui_data['delay'] = None
-            last_measurement_time = current_time
-            
-            corrected_altitude, current_alpha = sensor_fusion.update(
-                l76k.Altitude,
-                l76k.HDOP
-            )
-            
-            # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
-            ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
-            ui_data['lat'] = l76k.Lat
-            ui_data['lon'] = l76k.Lon
-            ui_data['alt'] = l76k.Altitude
-            ui_data['new_alt'] = corrected_altitude
-            ui_data['sat'] = l76k.Satellites
-            ui_data['hdop'] = l76k.HDOP
-            ui_data['vdop'] = l76k.VDOP
-            ui_data['pdop'] = l76k.PDOP
-            ui_data['speed'] = l76k.speed
-            ui_data['headed'] = l76k.direction
-            ui_data['fusion_alpha'] = current_alpha
-            
-            # Zapis do CSV, tylko gdy wykryto ruch
-            if movement_detected[0] and not pause_mesure.state:
-                ui_data['csv_status'] = "Aktywny"
-                if l76k.Altitude:
-                    mesurements += 1
-                    ui_data['mesurements'] = mesurements
-                    data_queue.put([str(mesure_timestamp), round(ui_data['lat'], 6), round(ui_data['lon'], 6), ui_data['alt'], ui_data['hdop'], ui_data['baro_alt']]) #powinien byc VDOP ale odbiornik nie zwraca tej wartosci poprawnie
-            else:
-                ui_data['csv_status'] = "Zatrzymany"
+            time.sleep(l76k_sleep)
+    except Exception as e:
+        logging.error(f"Wystapil blad podczas wykonywania wątku l76k: {e}", exc_info=True)
         
-        time.sleep(l76k_sleep)
-
 # Wątek do zapisywania bierzących pomiarów do pliku CSV
 def csv_writer_thread(csv_file, data_queue, stop_event):
     with open(csv_file, 'a', newline='') as file:
@@ -656,6 +669,8 @@ def main(stdscr):
             
     except KeyboardInterrupt:
             pass
+    except Exception as e:
+        logging.error(f"Wystapil blad podczas wykonywania glownej petli programu: {e}", exc_info=True)
     finally:
         if not alternative_display:
             oled_thread.join()
@@ -805,7 +820,7 @@ def main_service():
         oled_thread = SafeThread(target=oled_update_thread, args=(display, stop_event, ui_data))
         oled_thread.start()
     mpu_thread = SafeThread(target=mpu6050_thread, args=(mpu6050.mpu, stop_event, ui_data, movement_detected, sensor_fusion))
-    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue, ))
+    gps_thread = SafeThread(target=l76k_thread, args=(l76k, stop_event, ui_data, movement_detected, mesurements, pause_mesure, data_queue, sensor_fusion))
     csv_thread = SafeThread(target=csv_writer_thread, args=(csv_file, data_queue, stop_event))
     bmp_thread = SafeThread(target=bmp390_thread, args=(bmp, stop_event, ui_data, movement_detected))
     
