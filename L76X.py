@@ -275,9 +275,6 @@ class L76X(object):
                 return None
     
     def get_pdop(self, nmea_sentence):
-        """
-        Funkcja parsująca PDOP (dokładność punktowa) z frazy $GNGSA.
-        """
         fields = nmea_sentence.split(',')
         if fields[0] == "$GNGSA":
             try:
