@@ -183,7 +183,7 @@ class SensorFusion:
         self.last_altitude = None
         self.velocity_z = 0
         self.last_accel_z = 0
-        self.dt = 0.2  # okres próbkowania (200ms jak w L76K)
+        self.dt = 1  # okres próbkowania (1s jak w L76K)
         
     def calculate_adaptive_alpha(self, hdop):
         """
@@ -228,7 +228,7 @@ class SensorFusion:
         """
         # Kompensacja przyspieszenia grawitacyjnego
         accel_z = accel_data['z'] - 9.81
-        # Ogranicz maksymalną zmianę wysokości z pojedynczego pomiaru
+        # Ograniczenie maksymalnej zmiany wysokości z pojedynczego pomiaru
         max_height_change = 0.5  # 1m na pomiar
         delta_height = accel_z * (self.dt * self.dt) / 2 # s = (a * t^2) / 2
         
@@ -397,7 +397,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                     l76k.Altitude,
                     l76k.HDOP
                 )
-                
+                corrected_altitude = round(corrected_altitude, 2)
                 # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
                 ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
                 ui_data['lat'] = l76k.Lat
@@ -418,7 +418,7 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                     if l76k.Altitude:
                         mesurements += 1
                         ui_data['mesurements'] = mesurements
-                        data_queue.put([str(mesure_timestamp), round(ui_data['lat'], 6), round(ui_data['lon'], 6), ui_data['alt'], ui_data['hdop'], ui_data['baro_alt']]) #powinien byc VDOP ale odbiornik nie zwraca tej wartosci poprawnie
+                        data_queue.put([str(mesure_timestamp), round(ui_data['lat'], 6), round(ui_data['lon'], 6), ui_data['new_alt'], ui_data['hdop'], ui_data['baro_alt']]) #powinien byc VDOP ale odbiornik nie zwraca tej wartosci poprawnie
                 else:
                     ui_data['csv_status'] = "Zatrzymany"
             
@@ -646,7 +646,7 @@ def main(stdscr):
                 pdop = f"{ui_data['pdop']}" if ui_data['pdop'] is not None else "N/A"
                 speed = f"{ui_data['speed']}" if ui_data['speed'] is not None else "N/A"
                 headed = f"{ui_data['headed']}" if ui_data['headed'] is not None else "N/A"
-                stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Fusion alt: {ui_data['new_alt']}, Satellites: {sat}")
+                stdscr.addstr(5, 0, f"L76K\tLat,Lon: {lat}, {lon}, Altitude: {alt}, Fusion alt: {ui_data['new_alt']}, diff: {ui_data['new_alt'] - ui_data['alt']}")
                 stdscr.addstr(6, 0, f"[index] HDOP: {hdop}, VDOP: {vdop}, Speed: {speed} Direction: {headed}")
             except TypeError:
                 stdscr.addstr(5, 0, "L76K\tLat,Lon: N/A, N/A, Altitude: N/A, Satellites: N/A")
@@ -922,7 +922,6 @@ def main_service():
                 break
                 
             time.sleep(button_push_loop)
-
 
 if __name__ == "__main__":
     # Sprawdzenie czy skrypt jest uruchomiony jako usługa
