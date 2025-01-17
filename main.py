@@ -229,7 +229,7 @@ class SensorFusion:
         # Kompensacja przyspieszenia grawitacyjnego
         accel_z = accel_data['z'] - 9.81
         # Ogranicz maksymalną zmianę wysokości z pojedynczego pomiaru
-        max_height_change = 0.5  # 1m na pomiar
+        max_height_change = 1  # 1m na pomiar
         delta_height = accel_z * (self.dt * self.dt) / 2 # s = (a * t^2) / 2
         
         if abs(delta_height) < max_height_change:
@@ -393,24 +393,24 @@ def l76k_thread(l76k, stop_event, ui_data, movement_detected, mesurements, pause
                     ui_data['delay'] = None
                 last_measurement_time = current_time
                 
-                corrected_altitude, current_alpha = sensor_fusion.update(
-                    l76k.Altitude,
-                    l76k.HDOP
-                )
+                # corrected_altitude, current_alpha = sensor_fusion.update(
+                #     l76k.Altitude,
+                #     l76k.HDOP
+                # )
                 
                 # Aktualizacja danych GPS w pamięci współdzielonej (ui_data)
                 ui_data['time'] = f"{l76k.Time_H:02}:{l76k.Time_M:02}:{int(l76k.Time_S):02}"
                 ui_data['lat'] = l76k.Lat
                 ui_data['lon'] = l76k.Lon
                 ui_data['alt'] = l76k.Altitude
-                ui_data['new_alt'] = corrected_altitude
+                #ui_data['new_alt'] = corrected_altitude
                 ui_data['sat'] = l76k.Satellites
                 ui_data['hdop'] = l76k.HDOP
                 ui_data['vdop'] = l76k.VDOP
                 ui_data['pdop'] = l76k.PDOP
                 ui_data['speed'] = l76k.speed
                 ui_data['headed'] = l76k.direction
-                ui_data['fusion_alpha'] = current_alpha
+                #ui_data['fusion_alpha'] = current_alpha
                 
                 # Zapis do CSV, tylko gdy wykryto ruch
                 if movement_detected[0] and not pause_mesure.state:
