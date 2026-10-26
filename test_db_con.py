@@ -84,7 +84,7 @@ if __name__ == "__main__":
         'port': 5433, #5433 // 5434
         'dbname': 'terrain_measurements',
         'user': 'pkrypel',
-        'password': '20122002'
+        'password': 'admin'
     }
     
     # Wykonaj test
