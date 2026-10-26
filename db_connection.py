@@ -5,6 +5,11 @@ import csv
 from datetime import datetime
 import os
 
+
+def _optional_float(value):
+    """Empty CSV field (sensor not ready / not connected) -> NULL instead of dropping the row."""
+    return float(value) if value not in (None, '') else None
+
 def archive_csv_file(csv_file_path):
     """
     Przenosi plik CSV do folderu archiwum po udanym przesłaniu do bazy.
@@ -117,8 +122,9 @@ class DatabaseConnection:
                         lat = float(row['latitude'])
                         lon = float(row['longitude'])
                         alt = float(row['altitude'])
-                        vdop = float(row['VDOP'])
-                        baro_alt = float(row['baro_alt'])
+                        # Kolumna VDOP w CSV zawiera HDOP (L76K nie zwraca poprawnie VDOP)
+                        vdop = _optional_float(row.get('VDOP'))
+                        baro_alt = _optional_float(row.get('baro_alt'))
                         
                         cursor.execute(
                             sql.SQL("""
@@ -145,8 +151,9 @@ class DatabaseConnection:
                 
                 # Dodaj wpis do tabeli measurement_sessions
                 cursor.execute(sql.SQL("""
-                    INSERT INTO measurement_sessions (session_name, start_time, end_time, location_name)
-                    SELECT %s, MIN(measurement_time), MAX(measurement_time), %s
+                    INSERT INTO measurement_sessions (session_name, start_time, end_time, location_name, area_centroid)
+                    SELECT %s, MIN(measurement_time), MAX(measurement_time), %s,
+                           ST_Centroid(ST_Collect(location::geometry))::geography
                     FROM {}
                 """).format(sql.Identifier(table_name)),
                 (file_name, file_name.split('_')[0]))

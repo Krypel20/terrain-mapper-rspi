@@ -1,7 +1,10 @@
-curses
-numpy
-pandas
-folium
-psycopg2
+# Raspberry Pi OS: these can also be installed with apt (see README)
 RPi.GPIO
+gpiozero
+spidev
+smbus
+pyserial
+numpy
 Pillow
+psycopg2-binary
+micropyGPS @ git+https://github.com/inmcm/micropyGPS.git
